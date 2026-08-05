@@ -472,10 +472,7 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
 @property LiteSegmentedControl *languageControl;
 @property LiteButton *refreshButton;
 @property LiteButton *toggleAllButton;
-@property LiteSegmentedControl *filterControl;
-@property LiteSegmentedControl *datePresetControl;
-@property LiteSegmentedControl *sortControl;
-@property NSTextField *dateRangeLabel;
+@property LiteButton *filterMenuButton;
 @property NSScrollView *scrollView;
 @property NSTableView *tableView;
 @property NSTextField *countLabel;
@@ -492,19 +489,12 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
         _refreshButton.toolTip = @"刷新";
         _refreshButton.accessibilityLabel = @"刷新";
         _toggleAllButton = [[LiteButton alloc] initWithTitle:@"全部完成" style:LiteButtonStylePlain];
-        _filterControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"全部", @"待办", @"已完成"]];
-        _datePresetControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"全部", @"24小时", @"近7天", @"自定义"]];
-        _sortControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"默认", @"最新", @"优先级"]];
-        _dateRangeLabel = [NSTextField labelWithString:@"全部首次定义时间"];
-        _dateRangeLabel.font = [NSFont systemFontOfSize:10.5];
-        _dateRangeLabel.textColor = NSColor.secondaryLabelColor;
-        _dateRangeLabel.alignment = NSTextAlignmentCenter;
-        _dateRangeLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        _filterMenuButton = [[LiteButton alloc] initWithTitle:@"筛选/排序 ▾" style:LiteButtonStyleBordered];
         _tableView = [[NSTableView alloc] initWithFrame:NSZeroRect]; NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"task"]; [_tableView addTableColumn:column]; _tableView.headerView = nil; _tableView.rowHeight = 62; _tableView.intercellSpacing = NSMakeSize(0, 1); _tableView.backgroundColor = NSColor.clearColor;
         _scrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect]; _scrollView.documentView = _tableView; _scrollView.hasVerticalScroller = YES; _scrollView.autohidesScrollers = YES; _scrollView.drawsBackground = NO;
         _countLabel = [NSTextField labelWithString:@""]; _countLabel.font = [NSFont systemFontOfSize:11]; _countLabel.textColor = NSColor.secondaryLabelColor;
         _managementButton = [[LiteButton alloc] initWithTitle:@"管理…" style:LiteButtonStylePlain];
-        for (NSView *v in @[_dateLabel,_headingLabel,_createTaskButton,_languageControl,_refreshButton,_toggleAllButton,_filterControl,_datePresetControl,_sortControl,_dateRangeLabel,_scrollView,_countLabel,_managementButton]) [self addSubview:v];
+        for (NSView *v in @[_dateLabel,_headingLabel,_createTaskButton,_languageControl,_refreshButton,_toggleAllButton,_filterMenuButton,_scrollView,_countLabel,_managementButton]) [self addSubview:v];
     }
     return self;
 }
@@ -522,21 +512,17 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
     self.headingLabel.frame = NSMakeRect(16, 39, MAX(80, w - newTaskSize.width - 48), 31);
     self.createTaskButton.frame = NSMakeRect(w - newTaskSize.width - 12, 40, newTaskSize.width, 30);
     self.toggleAllButton.frame = NSMakeRect(10, 83, self.toggleAllButton.intrinsicContentSize.width, 28);
-    NSSize filterSize = self.filterControl.intrinsicContentSize; self.filterControl.frame = NSMakeRect(w - filterSize.width - 12, 83, filterSize.width, 28);
-    NSSize datePresetSize = self.datePresetControl.intrinsicContentSize;
-    self.datePresetControl.frame = NSMakeRect((w - datePresetSize.width) / 2, 123, datePresetSize.width, 28);
-    NSSize sortSize = self.sortControl.intrinsicContentSize;
-    self.sortControl.frame = NSMakeRect((w - sortSize.width) / 2, 158, sortSize.width, 28);
-    self.dateRangeLabel.frame = NSMakeRect(12, 190, w - 24, 17);
+    NSSize filterMenuSize = self.filterMenuButton.intrinsicContentSize;
+    self.filterMenuButton.frame = NSMakeRect(w - filterMenuSize.width - 10, 83, filterMenuSize.width, 28);
     NSSize managementSize = self.managementButton.intrinsicContentSize;
     self.countLabel.frame = NSMakeRect(12, h - 31, MAX(40, w - managementSize.width - 30), 18);
     self.managementButton.frame = NSMakeRect(w - managementSize.width - 8, h - 37, managementSize.width, 28);
-    self.scrollView.frame = NSMakeRect(0, 216, w, MAX(0, h - 216 - 42));
+    self.scrollView.frame = NSMakeRect(0, 117, w, MAX(0, h - 117 - 42));
 }
 - (void)drawRect:(NSRect)dirtyRect {
     [NSColor.controlBackgroundColor setFill]; NSRectFill(self.bounds);
     [NSColor.separatorColor setFill];
-    NSRectFill(NSMakeRect(0, 73, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, 116, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, 215, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, NSHeight(self.bounds)-42, NSWidth(self.bounds), 1));
+    NSRectFill(NSMakeRect(0, 73, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, 116, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, NSHeight(self.bounds)-42, NSWidth(self.bounds), 1));
 }
 @end
 
@@ -869,6 +855,9 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @property(nullable) NSTimer *previewTimer;
 @property BOOL benchmarkRan;
 - (void)showManagementMenu;
+- (void)showFilterMenu;
+- (NSMenu *)buildFilterMenu;
+- (void)updateFilterMenuPresentation;
 @end
 
 @implementation TodoController
@@ -896,14 +885,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.sidebar.languageControl.changeHandler = ^(NSInteger index) { [weakSelf changeLanguage:(TodoLanguage)index]; };
     self.sidebar.refreshButton.handler = ^{ [weakSelf refreshFromDisk:nil]; };
     self.sidebar.toggleAllButton.handler = ^{ [weakSelf toggleAll]; };
+    self.sidebar.filterMenuButton.handler = ^{ [weakSelf showFilterMenu]; };
     self.sidebar.managementButton.handler = ^{ [weakSelf showManagementMenu]; };
-    self.sidebar.filterControl.changeHandler = ^(NSInteger index) { weakSelf.filterIndex = index; [weakSelf applyFilter]; };
-    self.sidebar.datePresetControl.changeHandler = ^(NSInteger index) { [weakSelf selectDateFilter:(TodoDateFilterMode)index]; };
-    self.sidebar.sortControl.changeHandler = ^(NSInteger index) {
-        weakSelf.sortMode = (TodoSortMode)MAX(TodoSortModeOriginal, MIN(index, TodoSortModePriorityFirst));
-        [NSUserDefaults.standardUserDefaults setInteger:weakSelf.sortMode forKey:TodoSortModeDefaultsKey];
-        [weakSelf applyFilter];
-    };
     self.detail.completeButton.handler = ^{ [weakSelf toggleCurrent]; };
     self.detail.completionResultDisclosure.handler = ^(BOOL expanded) { [weakSelf setCompletionResultExpanded:expanded remember:YES]; };
     self.detail.modeControl.changeHandler = ^(NSInteger index) { [weakSelf changeViewMode:index]; };
@@ -1032,11 +1015,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.sidebar.createTaskButton.title = TodoLocalized(self.language, @"新建任务", @"New Task");
     self.sidebar.refreshButton.toolTip = TodoLocalized(self.language, @"刷新任务（⌘R）", @"Refresh tasks (⌘R)");
     self.sidebar.refreshButton.accessibilityLabel = TodoLocalized(self.language, @"刷新任务", @"Refresh tasks");
-    self.sidebar.filterControl.labels = english ? @[@"All", @"Active", @"Done"] : @[@"全部", @"待办", @"已完成"];
-    self.sidebar.datePresetControl.labels = english ? @[@"All", @"24h", @"7 days", @"Custom"] : @[@"全部", @"24小时", @"近7天", @"自定义"];
-    self.sidebar.sortControl.labels = english ? @[@"Original", @"Newest", @"Priority"] : @[@"默认", @"最新", @"优先级"];
-    self.sidebar.sortControl.selectedIndex = self.sortMode;
-    self.sidebar.sortControl.accessibilityLabel = TodoLocalized(self.language, @"任务排序", @"Task sorting");
+    self.sidebar.filterMenuButton.accessibilityLabel = TodoLocalized(self.language, @"筛选和排序", @"Filter and sort");
     self.sidebar.managementButton.title = TodoLocalized(self.language, @"管理…", @"Manage…");
     self.sidebar.managementButton.accessibilityLabel = TodoLocalized(self.language, @"管理任务", @"Manage tasks");
 
@@ -1052,7 +1031,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.detail.saveButton.title = TodoLocalized(self.language, @"保存", @"Save");
 
     [self updateCompletion];
-    [self updateDateRangeControls];
+    [self updateFilterMenuPresentation];
     [self applyFilter];
     if (self.currentTodo) {
         [self setSaveStatus:(self.dirty ? TodoLocalized(self.language, @"等待保存…", @"Waiting to save…") : TodoLocalized(self.language, @"已保存", @"Saved")) error:NO];
@@ -1094,6 +1073,115 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         [self clearCurrent];
     }
 }
+- (NSString *)statusFilterTitle {
+    if (self.filterIndex == 1) return TodoLocalized(self.language, @"待办", @"Active");
+    if (self.filterIndex == 2) return TodoLocalized(self.language, @"已完成", @"Done");
+    return TodoLocalized(self.language, @"全部", @"All");
+}
+- (NSString *)dateFilterTitle {
+    if (self.dateFilterMode == TodoDateFilterModeLast24Hours) {
+        return TodoLocalized(self.language, @"过去 24 小时", @"Last 24 Hours");
+    }
+    if (self.dateFilterMode == TodoDateFilterModeLast7Days) {
+        return TodoLocalized(self.language, @"过去 7 天", @"Last 7 Days");
+    }
+    if (self.dateFilterMode != TodoDateFilterModeCustom || !self.createdFromDate || !self.createdToExclusiveDate) {
+        return TodoLocalized(self.language, @"全部时间", @"All Time");
+    }
+
+    NSDate *inclusiveEnd = [NSCalendar.currentCalendar dateByAddingUnit:NSCalendarUnitDay value:-1 toDate:self.createdToExclusiveDate options:0];
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:(self.language == TodoLanguageEnglish ? @"en_US" : @"zh_CN")];
+    formatter.dateFormat = @"yyyy-MM-dd";
+    return [NSString stringWithFormat:@"%@ – %@", [formatter stringFromDate:self.createdFromDate], [formatter stringFromDate:inclusiveEnd]];
+}
+- (NSString *)sortModeTitle {
+    if (self.sortMode == TodoSortModeNewestFirst) return TodoLocalized(self.language, @"最新优先", @"Newest First");
+    if (self.sortMode == TodoSortModePriorityFirst) return TodoLocalized(self.language, @"优先级优先", @"Priority First");
+    return TodoLocalized(self.language, @"默认顺序", @"Original Order");
+}
+- (void)updateFilterMenuPresentation {
+    NSInteger activeSettings = 0;
+    if (self.filterIndex != 0) activeSettings++;
+    if (self.dateFilterMode != TodoDateFilterModeAll) activeSettings++;
+    if (self.sortMode != TodoSortModeOriginal) activeSettings++;
+
+    NSString *baseTitle = TodoLocalized(self.language, @"筛选/排序", @"Filter / Sort");
+    self.sidebar.filterMenuButton.title = activeSettings > 0
+        ? [NSString stringWithFormat:@"%@ · %ld ▾", baseTitle, (long)activeSettings]
+        : [NSString stringWithFormat:@"%@ ▾", baseTitle];
+    NSString *summary = [NSString stringWithFormat:
+        TodoLocalized(self.language, @"状态：%@ · 时间：%@ · 排序：%@", @"Status: %@ · Time: %@ · Sort: %@"),
+        [self statusFilterTitle], [self dateFilterTitle], [self sortModeTitle]];
+    self.sidebar.filterMenuButton.toolTip = summary;
+    self.sidebar.filterMenuButton.accessibilityValue = summary;
+    [self.sidebar setNeedsLayout:YES];
+}
+- (NSMenu *)buildFilterMenu {
+    NSMenu *menu = [NSMenu new];
+    menu.autoenablesItems = NO;
+
+    NSMenuItem *statusHeading = [menu addItemWithTitle:TodoLocalized(self.language, @"状态", @"Status") action:nil keyEquivalent:@""];
+    statusHeading.enabled = NO;
+    NSArray<NSString *> *statusTitles = self.language == TodoLanguageEnglish
+        ? @[@"All", @"Active", @"Done"]
+        : @[@"全部", @"待办", @"已完成"];
+    for (NSInteger index = 0; index < statusTitles.count; index++) {
+        NSMenuItem *item = [menu addItemWithTitle:statusTitles[index] action:@selector(setStatusFilterFromMenu:) keyEquivalent:@""];
+        item.target = self;
+        item.tag = index;
+        item.state = self.filterIndex == index ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *timeHeading = [menu addItemWithTitle:TodoLocalized(self.language, @"首次定义时间", @"Creation Time") action:nil keyEquivalent:@""];
+    timeHeading.enabled = NO;
+    NSArray<NSString *> *timeTitles = self.language == TodoLanguageEnglish
+        ? @[@"All Time", @"Last 24 Hours", @"Last 7 Days", @"Custom Range…"]
+        : @[@"全部时间", @"过去 24 小时", @"过去 7 天", @"自定义范围…"];
+    for (NSInteger index = 0; index < timeTitles.count; index++) {
+        NSMenuItem *item = [menu addItemWithTitle:timeTitles[index] action:@selector(setDateFilterFromMenu:) keyEquivalent:@""];
+        item.target = self;
+        item.tag = index;
+        item.state = self.dateFilterMode == index ? NSControlStateValueOn : NSControlStateValueOff;
+        if (index == TodoDateFilterModeCustom && self.dateFilterMode == TodoDateFilterModeCustom) {
+            item.toolTip = [self dateFilterTitle];
+        }
+    }
+
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *sortHeading = [menu addItemWithTitle:TodoLocalized(self.language, @"排序", @"Sort") action:nil keyEquivalent:@""];
+    sortHeading.enabled = NO;
+    NSArray<NSString *> *sortTitles = self.language == TodoLanguageEnglish
+        ? @[@"Original Order", @"Newest First", @"Priority First"]
+        : @[@"默认顺序", @"最新优先", @"优先级优先"];
+    for (NSInteger index = 0; index < sortTitles.count; index++) {
+        NSMenuItem *item = [menu addItemWithTitle:sortTitles[index] action:@selector(setSortModeFromMenu:) keyEquivalent:@""];
+        item.target = self;
+        item.tag = index;
+        item.state = self.sortMode == index ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    return menu;
+}
+- (void)showFilterMenu {
+    NSMenu *menu = [self buildFilterMenu];
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, 0) inView:self.sidebar.filterMenuButton];
+}
+- (void)setStatusFilterFromMenu:(NSMenuItem *)sender {
+    self.filterIndex = MAX(0, MIN(sender.tag, 2));
+    [self updateFilterMenuPresentation];
+    [self applyFilter];
+}
+- (void)setDateFilterFromMenu:(NSMenuItem *)sender {
+    [self selectDateFilter:(TodoDateFilterMode)MAX(TodoDateFilterModeAll, MIN(sender.tag, TodoDateFilterModeCustom))];
+}
+- (void)setSortModeFromMenu:(NSMenuItem *)sender {
+    self.sortMode = (TodoSortMode)MAX(TodoSortModeOriginal, MIN(sender.tag, TodoSortModePriorityFirst));
+    [NSUserDefaults.standardUserDefaults setInteger:self.sortMode forKey:TodoSortModeDefaultsKey];
+    [self updateFilterMenuPresentation];
+    [self applyFilter];
+}
+
 - (void)showManagementMenu {
     NSInteger completedCount = 0;
     NSInteger archivedCount = 0;
@@ -1384,7 +1472,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.dateFilterMode = mode;
     self.createdFromDate = nil;
     self.createdToExclusiveDate = nil;
-    [self updateDateRangeControls];
+    [self updateFilterMenuPresentation];
     [self applyFilter];
 }
 - (void)chooseDateRange {
@@ -1440,7 +1528,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
             return;
         }
         if (response != NSAlertFirstButtonReturn) {
-            strongSelf.sidebar.datePresetControl.selectedIndex = strongSelf.dateFilterMode;
+            [strongSelf updateFilterMenuPresentation];
             return;
         }
 
@@ -1448,7 +1536,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         NSDate *endDay = [calendar startOfDayForDate:toPicker.dateValue];
         NSDate *endExclusive = [calendar dateByAddingUnit:NSCalendarUnitDay value:1 toDate:endDay options:0];
         if ([start compare:endExclusive] != NSOrderedAscending) {
-            strongSelf.sidebar.datePresetControl.selectedIndex = strongSelf.dateFilterMode;
+            [strongSelf updateFilterMenuPresentation];
             NSError *error = [NSError errorWithDomain:TodoErrorDomain code:6 userInfo:@{NSLocalizedDescriptionKey: TodoLocalized(strongSelf.language, @"开始日期不能晚于结束日期", @"The start date cannot be later than the end date")}];
             [strongSelf showError:error];
             return;
@@ -1457,31 +1545,9 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         strongSelf.dateFilterMode = TodoDateFilterModeCustom;
         strongSelf.createdFromDate = start;
         strongSelf.createdToExclusiveDate = endExclusive;
-        [strongSelf updateDateRangeControls];
+        [strongSelf updateFilterMenuPresentation];
         [strongSelf applyFilter];
     }];
-}
-- (void)updateDateRangeControls {
-    self.sidebar.datePresetControl.selectedIndex = self.dateFilterMode;
-
-    if (self.dateFilterMode == TodoDateFilterModeLast24Hours) {
-        self.sidebar.dateRangeLabel.stringValue = TodoLocalized(self.language, @"滚动范围：过去 24 小时", @"Rolling range: last 24 hours");
-        return;
-    }
-    if (self.dateFilterMode == TodoDateFilterModeLast7Days) {
-        self.sidebar.dateRangeLabel.stringValue = TodoLocalized(self.language, @"滚动范围：过去 7 天", @"Rolling range: last 7 days");
-        return;
-    }
-    if (self.dateFilterMode != TodoDateFilterModeCustom || !self.createdFromDate || !self.createdToExclusiveDate) {
-        self.sidebar.dateRangeLabel.stringValue = TodoLocalized(self.language, @"全部首次定义时间", @"All creation times");
-        return;
-    }
-
-    NSDate *inclusiveEnd = [NSCalendar.currentCalendar dateByAddingUnit:NSCalendarUnitDay value:-1 toDate:self.createdToExclusiveDate options:0];
-    NSDateFormatter *formatter = [NSDateFormatter new];
-    formatter.locale = [NSLocale localeWithLocaleIdentifier:(self.language == TodoLanguageEnglish ? @"en_US" : @"zh_CN")];
-    formatter.dateFormat = @"yyyy-MM-dd";
-    self.sidebar.dateRangeLabel.stringValue = [NSString stringWithFormat:(self.language == TodoLanguageEnglish ? @"%@ to %@" : @"%@ 至 %@"), [formatter stringFromDate:self.createdFromDate], [formatter stringFromDate:inclusiveEnd]];
 }
 - (NSDictionary *)summaryForID:(NSNumber *)todoID { for (NSDictionary *s in self.summaries) if ([s[@"id"] isEqual:todoID]) return s; return nil; }
 - (void)updateSelection { NSInteger row = NSNotFound; if (self.selectedID) for (NSInteger i=0;i<self.filtered.count;i++) if ([self.filtered[i][@"id"] isEqual:self.selectedID]) { row=i; break; } if (row==NSNotFound) [self.sidebar.tableView deselectAll:nil]; else { [self.sidebar.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:row] byExtendingSelection:NO]; [self.sidebar.tableView scrollRowToVisible:row]; } }
@@ -1825,6 +1891,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     if (!mode.length || !self.summaries.count) return;
 
     NSDictionary<NSString *, NSString *> *environment = NSProcessInfo.processInfo.environment;
+    NSString *benchmarkStatusFilter = environment[@"TODO_BENCHMARK_STATUS_FILTER"];
     NSString *benchmarkDateFilter = environment[@"TODO_BENCHMARK_DATE_FILTER"];
     NSString *benchmarkFrom = environment[@"TODO_BENCHMARK_FROM_MS"];
     NSString *benchmarkTo = environment[@"TODO_BENCHMARK_TO_MS"];
@@ -1832,6 +1899,13 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     NSString *benchmarkArchiveView = environment[@"TODO_BENCHMARK_ARCHIVE_VIEW"];
     NSString *benchmarkManagementAction = environment[@"TODO_BENCHMARK_MANAGEMENT_ACTION"];
     NSString *benchmarkRefreshAfterMs = environment[@"TODO_BENCHMARK_REFRESH_AFTER_MS"];
+    if ([benchmarkStatusFilter isEqualToString:@"active"]) {
+        self.filterIndex = 1;
+    } else if ([benchmarkStatusFilter isEqualToString:@"completed"]) {
+        self.filterIndex = 2;
+    } else if ([benchmarkStatusFilter isEqualToString:@"all"]) {
+        self.filterIndex = 0;
+    }
     if ([benchmarkDateFilter isEqualToString:@"24h"]) {
         self.dateFilterMode = TodoDateFilterModeLast24Hours;
     } else if ([benchmarkDateFilter isEqualToString:@"7d"]) {
@@ -1843,17 +1917,14 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     }
     if ([benchmarkSort isEqualToString:@"newest"]) {
         self.sortMode = TodoSortModeNewestFirst;
-        self.sidebar.sortControl.selectedIndex = self.sortMode;
     } else if ([benchmarkSort isEqualToString:@"priority"]) {
         self.sortMode = TodoSortModePriorityFirst;
-        self.sidebar.sortControl.selectedIndex = self.sortMode;
     } else if ([benchmarkSort isEqualToString:@"original"]) {
         self.sortMode = TodoSortModeOriginal;
-        self.sidebar.sortControl.selectedIndex = self.sortMode;
     }
     if (benchmarkArchiveView.length) self.archiveView = benchmarkArchiveView.boolValue;
-    if (benchmarkDateFilter.length || benchmarkFrom.length || benchmarkTo.length || benchmarkSort.length || benchmarkArchiveView.length) {
-        [self updateDateRangeControls];
+    if (benchmarkStatusFilter.length || benchmarkDateFilter.length || benchmarkFrom.length || benchmarkTo.length || benchmarkSort.length || benchmarkArchiveView.length) {
+        [self updateFilterMenuPresentation];
         [self applyFilter];
     }
 
@@ -1942,12 +2013,31 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
             NSNumber *secondFilteredID = self.filtered.count > 1 ? self.filtered[1][@"id"] : nil;
             NSNumber *thirdFilteredID = self.filtered.count > 2 ? self.filtered[2][@"id"] : nil;
             TaskCellView *firstCell = self.filtered.count > 0 ? (TaskCellView *)[self.sidebar.tableView viewAtColumn:0 row:0 makeIfNecessary:YES] : nil;
+            NSMenu *filterMenu = [self buildFilterMenu];
+            NSUInteger checkedFilterItems = 0;
+            NSUInteger filterMenuHeadings = 0;
+            for (NSMenuItem *item in filterMenu.itemArray) {
+                if (item.state == NSControlStateValueOn) checkedFilterItems++;
+                if (!item.enabled && !item.isSeparatorItem) filterMenuHeadings++;
+            }
             fprintf(stderr,
-                    "mode=%s viewMode=%s sortMode=%s archiveView=%d firstFilteredID=%s firstCellID=%s firstTitleX=%.0f firstTitleWidth=%.0f firstTitleY=%.0f firstIDY=%.0f secondFilteredID=%s thirdFilteredID=%s selectedID=%s selectedPriority=%s priorityControl=%ld resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s managementTitle=%s managementHidden=%d todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
+                    "mode=%s viewMode=%s sortMode=%s filterStatus=%ld dateFilter=%ld archiveView=%d filterMenuItems=%lu filterMenuChecked=%lu filterMenuHeadings=%lu filterButtonTitle=%s toggleX=%.0f toggleWidth=%.0f filterButtonX=%.0f filterButtonWidth=%.0f tableY=%.0f tableHeight=%.0f firstFilteredID=%s firstCellID=%s firstTitleX=%.0f firstTitleWidth=%.0f firstTitleY=%.0f firstIDY=%.0f secondFilteredID=%s thirdFilteredID=%s selectedID=%s selectedPriority=%s priorityControl=%ld resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s managementTitle=%s managementHidden=%d todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
                     mode.UTF8String,
                     self.viewMode == TodoViewModeEdit ? "edit" : (self.viewMode == TodoViewModeSplit ? "split" : "preview"),
                     self.sortMode == TodoSortModeNewestFirst ? "newest" : (self.sortMode == TodoSortModePriorityFirst ? "priority" : "original"),
+                    (long)self.filterIndex,
+                    (long)self.dateFilterMode,
                     self.archiveView,
+                    (unsigned long)filterMenu.itemArray.count,
+                    (unsigned long)checkedFilterItems,
+                    (unsigned long)filterMenuHeadings,
+                    self.sidebar.filterMenuButton.title.UTF8String,
+                    NSMinX(self.sidebar.toggleAllButton.frame),
+                    NSWidth(self.sidebar.toggleAllButton.frame),
+                    NSMinX(self.sidebar.filterMenuButton.frame),
+                    NSWidth(self.sidebar.filterMenuButton.frame),
+                    NSMinY(self.sidebar.scrollView.frame),
+                    NSHeight(self.sidebar.scrollView.frame),
                     firstFilteredID.stringValue.UTF8String ?: "none",
                     firstCell.idLabel.stringValue.UTF8String ?: "none",
                     NSMinX(firstCell.titleLabel.frame),
