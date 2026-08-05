@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "crates/todo-core",
+    "crates/todoctl",
+    "crates/todo-macos-bridge",
+]
+resolver = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

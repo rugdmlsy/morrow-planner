@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Native build output
+/native-macos/build/
+
+# Rust build output
+/src-tauri/target/
+
+# Logs and local overrides
+*.log
+*.local
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
+.idea/

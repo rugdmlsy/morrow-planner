@@ -1,0 +1,8 @@
+[package]
+name = "todoctl"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+todo-core = { path = "../todo-core" }
+serde_json = "1"
