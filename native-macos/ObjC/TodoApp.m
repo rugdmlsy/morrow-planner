@@ -460,6 +460,7 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
 @property NSTextField *headingLabel;
 @property LiteButton *createTaskButton;
 @property LiteSegmentedControl *languageControl;
+@property LiteButton *refreshButton;
 @property LiteButton *toggleAllButton;
 @property LiteSegmentedControl *filterControl;
 @property LiteSegmentedControl *datePresetControl;
@@ -477,6 +478,9 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
         _headingLabel = [NSTextField labelWithString:@"今天要做什么？"]; _headingLabel.font = [NSFont systemFontOfSize:24 weight:NSFontWeightBold];
         _createTaskButton = [[LiteButton alloc] initWithTitle:@"新建任务" style:LiteButtonStyleBordered];
         _languageControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"中", @"EN"]];
+        _refreshButton = [[LiteButton alloc] initWithTitle:@"↻" style:LiteButtonStylePlain];
+        _refreshButton.toolTip = @"刷新";
+        _refreshButton.accessibilityLabel = @"刷新";
         _toggleAllButton = [[LiteButton alloc] initWithTitle:@"全部完成" style:LiteButtonStylePlain];
         _filterControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"全部", @"待办", @"已完成"]];
         _datePresetControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"全部", @"24小时", @"近7天", @"自定义"]];
@@ -490,7 +494,7 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
         _scrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect]; _scrollView.documentView = _tableView; _scrollView.hasVerticalScroller = YES; _scrollView.autohidesScrollers = YES; _scrollView.drawsBackground = NO;
         _countLabel = [NSTextField labelWithString:@""]; _countLabel.font = [NSFont systemFontOfSize:11]; _countLabel.textColor = NSColor.secondaryLabelColor;
         _clearButton = [[LiteButton alloc] initWithTitle:@"清除已完成" style:LiteButtonStyleDanger];
-        for (NSView *v in @[_dateLabel,_headingLabel,_createTaskButton,_languageControl,_toggleAllButton,_filterControl,_datePresetControl,_sortControl,_dateRangeLabel,_scrollView,_countLabel,_clearButton]) [self addSubview:v];
+        for (NSView *v in @[_dateLabel,_headingLabel,_createTaskButton,_languageControl,_refreshButton,_toggleAllButton,_filterControl,_datePresetControl,_sortControl,_dateRangeLabel,_scrollView,_countLabel,_clearButton]) [self addSubview:v];
     }
     return self;
 }
@@ -498,8 +502,12 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
 - (void)layout {
     [super layout]; CGFloat w = NSWidth(self.bounds), h = NSHeight(self.bounds);
     NSSize languageSize = self.languageControl.intrinsicContentSize;
-    self.dateLabel.frame = NSMakeRect(16, 18, MAX(80, w - languageSize.width - 44), 16);
-    self.languageControl.frame = NSMakeRect(w - languageSize.width - 12, 10, languageSize.width, 28);
+    CGFloat languageX = w - languageSize.width - 12;
+    CGFloat refreshWidth = 30.0;
+    CGFloat refreshX = languageX - refreshWidth - 4.0;
+    self.dateLabel.frame = NSMakeRect(16, 18, MAX(60, refreshX - 24), 16);
+    self.refreshButton.frame = NSMakeRect(refreshX, 9, refreshWidth, 30);
+    self.languageControl.frame = NSMakeRect(languageX, 10, languageSize.width, 28);
     NSSize newTaskSize = self.createTaskButton.intrinsicContentSize;
     self.headingLabel.frame = NSMakeRect(16, 39, MAX(80, w - newTaskSize.width - 48), 31);
     self.createTaskButton.frame = NSMakeRect(w - newTaskSize.width - 12, 40, newTaskSize.width, 30);
@@ -873,6 +881,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     __weak typeof(self) weakSelf = self;
     self.sidebar.createTaskButton.handler = ^{ [weakSelf addEditableTask]; };
     self.sidebar.languageControl.changeHandler = ^(NSInteger index) { [weakSelf changeLanguage:(TodoLanguage)index]; };
+    self.sidebar.refreshButton.handler = ^{ [weakSelf refreshFromDisk:nil]; };
     self.sidebar.toggleAllButton.handler = ^{ [weakSelf toggleAll]; };
     self.sidebar.clearButton.handler = ^{ [weakSelf clearCompleted]; };
     self.sidebar.filterControl.changeHandler = ^(NSInteger index) { weakSelf.filterIndex = index; [weakSelf applyFilter]; };
@@ -1008,6 +1017,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 
     self.sidebar.headingLabel.stringValue = TodoLocalized(self.language, @"今天要做什么？", @"Today's tasks");
     self.sidebar.createTaskButton.title = TodoLocalized(self.language, @"新建任务", @"New Task");
+    self.sidebar.refreshButton.toolTip = TodoLocalized(self.language, @"刷新任务（⌘R）", @"Refresh tasks (⌘R)");
+    self.sidebar.refreshButton.accessibilityLabel = TodoLocalized(self.language, @"刷新任务", @"Refresh tasks");
     self.sidebar.filterControl.labels = english ? @[@"All", @"Active", @"Done"] : @[@"全部", @"待办", @"已完成"];
     self.sidebar.datePresetControl.labels = english ? @[@"All", @"24h", @"7 days", @"Custom"] : @[@"全部", @"24小时", @"近7天", @"自定义"];
     self.sidebar.sortControl.labels = english ? @[@"Original", @"Newest", @"Priority"] : @[@"默认", @"最新", @"优先级"];
@@ -1056,6 +1067,14 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     NSError *error = nil; id value = BridgeCall(@{@"command":@"list"}, &error); if (!value) { [self showError:error]; return; }
     self.summaries = value; if (self.selectedID && ![self summaryForID:self.selectedID]) { self.selectedID = nil; [self clearCurrent]; }
     [self applyFilter];
+}
+- (void)refreshFromDisk:(id)sender {
+    if (![self saveIfNeeded]) return;
+    NSNumber *selectedID = self.selectedID;
+    [self reloadSummaries];
+    if (selectedID && [self summaryForID:selectedID]) {
+        [self selectID:selectedID];
+    }
 }
 - (void)applyFilter {
     NSInteger statusFilter = self.filterIndex;
@@ -1595,6 +1614,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     NSString *benchmarkFrom = environment[@"TODO_BENCHMARK_FROM_MS"];
     NSString *benchmarkTo = environment[@"TODO_BENCHMARK_TO_MS"];
     NSString *benchmarkSort = environment[@"TODO_BENCHMARK_SORT"];
+    NSString *benchmarkRefreshAfterMs = environment[@"TODO_BENCHMARK_REFRESH_AFTER_MS"];
     if ([benchmarkDateFilter isEqualToString:@"24h"]) {
         self.dateFilterMode = TodoDateFilterModeLast24Hours;
     } else if ([benchmarkDateFilter isEqualToString:@"7d"]) {
@@ -1650,8 +1670,17 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         [self handleEditorChange];
     }
 
+    double diagnosticsDelay = 0.25;
+    if (benchmarkRefreshAfterMs.doubleValue > 0.0) {
+        double refreshDelay = benchmarkRefreshAfterMs.doubleValue / 1000.0;
+        diagnosticsDelay = refreshDelay + 0.35;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(refreshDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self refreshFromDisk:nil];
+        });
+    }
+
     if ([NSProcessInfo.processInfo.environment[@"TODO_LAYOUT_DIAGNOSTICS"] boolValue]) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(diagnosticsDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self.detail layoutSubtreeIfNeeded];
             NSRect viewport = self.detail.editorScroll.contentView.bounds;
             NSRect editorUsed = [self.detail.editor.layoutManager usedRectForTextContainer:self.detail.editor.textContainer];
@@ -1790,6 +1819,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     NSMenu *file = [[NSMenu alloc] initWithTitle:TodoLocalized(language, @"文件", @"File")];
     NSMenuItem *save = [file addItemWithTitle:TodoLocalized(language, @"保存", @"Save") action:@selector(saveCurrent:) keyEquivalent:@"s"];
     save.target = self.controller;
+    NSMenuItem *refresh = [file addItemWithTitle:TodoLocalized(language, @"刷新任务", @"Refresh Tasks") action:@selector(refreshFromDisk:) keyEquivalent:@"r"];
+    refresh.target = self.controller;
     [file addItemWithTitle:TodoLocalized(language, @"关闭窗口", @"Close Window") action:@selector(performClose:) keyEquivalent:@"w"];
     fileItem.submenu = file;
 
