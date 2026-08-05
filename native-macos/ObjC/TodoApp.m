@@ -218,10 +218,33 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
 }
 - (void)mouseDown:(NSEvent *)event {
     if (!self.enabled) return;
-    _pressed = YES;
+
+    NSPoint startPoint = [self convertPoint:event.locationInWindow fromView:nil];
+    BOOL cancelledByDrag = NO;
+    _pressed = NSPointInRect(startPoint, self.bounds);
     self.needsDisplay = YES;
-    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    if (NSPointInRect(point, self.bounds)) [self activate];
+
+    while (YES) {
+        NSEvent *next = [self.window nextEventMatchingMask:(NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp)];
+        if (!next) break;
+
+        NSPoint point = [self convertPoint:next.locationInWindow fromView:nil];
+        if (next.type == NSEventTypeLeftMouseDragged) {
+            CGFloat deltaX = fabs(point.x - startPoint.x);
+            CGFloat deltaY = fabs(point.y - startPoint.y);
+            if (deltaX > 4.0 || deltaY > 4.0) cancelledByDrag = YES;
+            _pressed = !cancelledByDrag && NSPointInRect(point, self.bounds);
+            self.needsDisplay = YES;
+            continue;
+        }
+
+        BOOL shouldActivate = !cancelledByDrag && NSPointInRect(point, self.bounds);
+        _pressed = NO;
+        self.needsDisplay = YES;
+        if (shouldActivate) [self activate];
+        break;
+    }
+
     _pressed = NO;
     self.needsDisplay = YES;
 }
@@ -678,7 +701,11 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 - (NSRect)dividerHitRect {
     NSRect divider = [self dividerRect];
     if (NSIsEmptyRect(divider)) return NSZeroRect;
-    return NSInsetRect(divider, 0, -3.0);
+    return NSInsetRect(divider, 0, -4.0);
+}
+- (NSView *)hitTest:(NSPoint)point {
+    if (self.resultExpanded && NSPointInRect(point, [self dividerHitRect])) return self;
+    return [super hitTest:point];
 }
 - (void)resetCursorRects {
     [super resetCursorRects];
@@ -1480,6 +1507,9 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
             NSRect resultUsed = [self.detail.completionResultEditor.layoutManager usedRectForTextContainer:self.detail.completionResultEditor.textContainer];
             NSRect previewUsed = self.detail.preview ? [self.detail.preview.layoutManager usedRectForTextContainer:self.detail.preview.textContainer] : NSZeroRect;
             NSRect resultPreviewUsed = self.detail.completionResultPreview ? [self.detail.completionResultPreview.layoutManager usedRectForTextContainer:self.detail.completionResultPreview.textContainer] : NSZeroRect;
+            NSRect dividerHit = [self.detail dividerHitRect];
+            NSPoint headerEdgePoint = NSMakePoint(NSMidX(dividerHit), NSMinY(self.detail.completionResultDisclosure.frame) + 2.0);
+            BOOL dividerOwnsHeaderEdge = self.detail.resultExpanded && [self.detail hitTest:headerEdgePoint] == self.detail;
             __block NSUInteger resultPreviewLinks = 0;
             if (self.detail.completionResultPreview.textStorage.length > 0) {
                 [self.detail.completionResultPreview.textStorage enumerateAttribute:NSLinkAttributeName
@@ -1490,7 +1520,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
                 }];
             }
             fprintf(stderr,
-                    "mode=%s viewMode=%s selectedID=%s resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d\n",
+                    "mode=%s viewMode=%s selectedID=%s resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsHeaderEdge=%d\n",
                     mode.UTF8String,
                     self.viewMode == TodoViewModeEdit ? "edit" : (self.viewMode == TodoViewModeSplit ? "split" : "preview"),
                     self.selectedID.stringValue.UTF8String ?: "none",
@@ -1524,7 +1554,9 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
                     self.detail.completionResultScroll.hidden,
                     self.detail.completionResultPreviewScroll.hidden,
                     self.detail.editorScroll.hidden,
-                    self.detail.previewScroll.hidden);
+                    self.detail.previewScroll.hidden,
+                    NSHeight(dividerHit),
+                    dividerOwnsHeaderEdge);
         });
     }
 }
