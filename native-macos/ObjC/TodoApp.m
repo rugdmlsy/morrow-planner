@@ -685,11 +685,10 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     [NSColor.separatorColor setFill];
     CGFloat footerTop = MAX(55.0, NSHeight(self.bounds) - 53.0);
     NSRectFill(NSMakeRect(0, 54, NSWidth(self.bounds), 1));
-    if (!self.completionResultDisclosure.hidden) {
-        NSRectFill(NSMakeRect(0, NSMinY(self.completionResultDisclosure.frame), NSWidth(self.bounds), 1));
-    }
     if (self.resultExpanded) {
         NSRectFill([self dividerRect]);
+    } else if (!self.completionResultDisclosure.hidden) {
+        NSRectFill(NSMakeRect(0, NSMinY(self.completionResultDisclosure.frame), NSWidth(self.bounds), 1));
     }
     NSRectFill(NSMakeRect(0, footerTop, NSWidth(self.bounds), 1));
 }
