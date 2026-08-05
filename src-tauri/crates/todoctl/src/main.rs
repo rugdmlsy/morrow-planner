@@ -1,5 +1,5 @@
 use std::{env, path::PathBuf, process::ExitCode};
-use todo_core::{default_data_file, TodoStore};
+use todo_core::{default_data_file, TodoPriority, TodoStore};
 
 const HELP: &str = r#"todoctl — command-line control for Todo
 
@@ -15,6 +15,7 @@ Commands:
   content <id> <text>                    Update task content
   result <id> <text>                     Set the optional completion result
   clear-result <id>                       Clear the completion result
+  priority <id> <low|medium|high>         Set task priority
   delete <id>                            Delete a task
   complete-all                           Complete every task
   restore-all                            Restore every task
@@ -68,7 +69,7 @@ fn run() -> Result<(), String> {
             let id = id_argument(&args, 1)?;
             let title = joined_argument(&args, 2, "edit requires a title")?;
             store
-                .update(id, Some(title), None, None, None)
+                .update(id, Some(title), None, None, None, None)
                 .map_err(|error| error.to_string())?;
             Ok(())
         }
@@ -76,7 +77,7 @@ fn run() -> Result<(), String> {
             let id = id_argument(&args, 1)?;
             let content = joined_argument(&args, 2, "content requires text")?;
             store
-                .update(id, None, Some(content), None, None)
+                .update(id, None, Some(content), None, None, None)
                 .map_err(|error| error.to_string())?;
             Ok(())
         }
@@ -84,14 +85,22 @@ fn run() -> Result<(), String> {
             let id = id_argument(&args, 1)?;
             let result = joined_argument(&args, 2, "result requires text")?;
             store
-                .update(id, None, None, Some(result), None)
+                .update(id, None, None, Some(result), None, None)
                 .map_err(|error| error.to_string())?;
             Ok(())
         }
         "clear-result" => {
             let id = id_argument(&args, 1)?;
             store
-                .update(id, None, None, Some(String::new()), None)
+                .update(id, None, None, Some(String::new()), None, None)
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        "priority" => {
+            let id = id_argument(&args, 1)?;
+            let priority = priority_argument(&args, 2)?;
+            store
+                .update(id, None, None, None, Some(priority), None)
                 .map_err(|error| error.to_string())?;
             Ok(())
         }
@@ -169,9 +178,10 @@ fn list(store: &TodoStore, args: &[String]) -> Result<(), String> {
     } else {
         for todo in todos {
             println!(
-                "{}\t{}\t{}",
+                "{}\t{}\t{}\t{}",
                 todo.id,
                 if todo.completed { "done" } else { "todo" },
+                priority_name(todo.priority),
                 display_title(todo)
             );
         }
@@ -205,9 +215,29 @@ fn display_title(todo: &todo_core::Todo) -> String {
 fn update_completed(store: &mut TodoStore, args: &[String], completed: bool) -> Result<(), String> {
     let id = id_argument(args, 1)?;
     store
-        .update(id, None, None, None, Some(completed))
+        .update(id, None, None, None, None, Some(completed))
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn priority_name(priority: TodoPriority) -> &'static str {
+    match priority {
+        TodoPriority::Low => "low",
+        TodoPriority::Medium => "medium",
+        TodoPriority::High => "high",
+    }
+}
+
+fn priority_argument(args: &[String], index: usize) -> Result<TodoPriority, String> {
+    match args.get(index).map(String::as_str) {
+        Some("low") => Ok(TodoPriority::Low),
+        Some("medium") => Ok(TodoPriority::Medium),
+        Some("high") => Ok(TodoPriority::High),
+        Some(value) => Err(format!(
+            "invalid priority '{value}'; use low, medium, or high"
+        )),
+        None => Err("priority requires low, medium, or high".to_owned()),
+    }
 }
 
 fn id_argument(args: &[String], index: usize) -> Result<u64, String> {

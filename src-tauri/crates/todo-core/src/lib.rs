@@ -13,6 +13,25 @@ pub const MAX_CONTENT_LEN: usize = 25_000;
 pub const MAX_COMPLETION_RESULT_LEN: usize = 10_000;
 pub const APP_IDENTIFIER: &str = "com.xycdev.todo";
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TodoPriority {
+    #[default]
+    Low,
+    Medium,
+    High,
+}
+
+impl TodoPriority {
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Low => 0,
+            Self::Medium => 1,
+            Self::High => 2,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Todo {
@@ -22,6 +41,8 @@ pub struct Todo {
     pub content: String,
     #[serde(default)]
     pub completion_result: String,
+    #[serde(default)]
+    pub priority: TodoPriority,
     pub completed: bool,
     #[serde(default)]
     pub created_at_ms: i64,
@@ -124,6 +145,7 @@ impl TodoStore {
             title,
             content: String::new(),
             completion_result: String::new(),
+            priority: TodoPriority::Low,
             completed: false,
             created_at_ms: now_ms(),
         };
@@ -139,6 +161,7 @@ impl TodoStore {
         title: Option<String>,
         content: Option<String>,
         completion_result: Option<String>,
+        priority: Option<TodoPriority>,
         completed: Option<bool>,
     ) -> Result<Todo, StoreError> {
         let _lock = self.lock_exclusive()?;
@@ -162,6 +185,9 @@ impl TodoStore {
         }
         if let Some(completion_result) = normalized_completion_result {
             todo.completion_result = completion_result;
+        }
+        if let Some(priority) = priority {
+            todo.priority = priority;
         }
         if let Some(completed) = completed {
             todo.completed = completed;
@@ -449,7 +475,7 @@ mod tests {
             .add("Ship MVP".to_owned())
             .expect("todo should be added");
         store
-            .update(first.id, None, None, None, Some(true))
+            .update(first.id, None, None, None, None, Some(true))
             .expect("todo should be updated");
         store.delete(second.id).expect("todo should be deleted");
 
@@ -461,6 +487,7 @@ mod tests {
                 title: "Write tests".to_owned(),
                 content: String::new(),
                 completion_result: String::new(),
+                priority: TodoPriority::Low,
                 completed: true,
                 created_at_ms: first.created_at_ms,
             }]
@@ -478,7 +505,7 @@ mod tests {
             .add("Remove".to_owned())
             .expect("todo should be added");
         store
-            .update(second.id, None, None, None, Some(true))
+            .update(second.id, None, None, None, None, Some(true))
             .expect("todo should be updated");
 
         assert_eq!(store.clear_completed().expect("clear should succeed"), 1);
@@ -500,6 +527,7 @@ mod tests {
                 todo.id,
                 Some(String::new()),
                 Some("First line\nMore detail".to_owned()),
+                None,
                 None,
                 None,
             )
@@ -525,6 +553,7 @@ mod tests {
                 None,
                 None,
                 Some("Released v1.0 and verified the package".to_owned()),
+                None,
                 Some(true),
             )
             .expect("completion result should update");
@@ -534,7 +563,7 @@ mod tests {
         );
 
         let cleared = store
-            .update(todo.id, None, None, Some("   ".to_owned()), None)
+            .update(todo.id, None, None, Some("   ".to_owned()), None, None)
             .expect("completion result should clear");
         assert!(cleared.completion_result.is_empty());
 
@@ -551,12 +580,38 @@ mod tests {
         assert!(todo.created_at_ms > 0);
 
         let updated = store
-            .update(todo.id, None, Some("Changed".to_owned()), None, Some(true))
+            .update(
+                todo.id,
+                None,
+                Some("Changed".to_owned()),
+                None,
+                None,
+                Some(true),
+            )
             .expect("todo should update");
         assert_eq!(updated.created_at_ms, todo.created_at_ms);
 
         let reloaded = TodoStore::load(path.clone()).expect("store should reload");
         assert_eq!(reloaded.list()[0].created_at_ms, todo.created_at_ms);
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn defaults_and_updates_priority() {
+        let path = test_path("priority");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let todo = store
+            .add("Prioritized".to_owned())
+            .expect("todo should be added");
+        assert_eq!(todo.priority, TodoPriority::Low);
+
+        let updated = store
+            .update(todo.id, None, None, None, Some(TodoPriority::High), None)
+            .expect("priority should update");
+        assert_eq!(updated.priority, TodoPriority::High);
+
+        let reloaded = TodoStore::load(path.clone()).expect("store should reload");
+        assert_eq!(reloaded.list()[0].priority, TodoPriority::High);
         fs::remove_file(path).expect("test data should be removable");
     }
 
@@ -572,6 +627,7 @@ mod tests {
         let store = TodoStore::load(path.clone()).expect("legacy store should migrate");
         assert!(store.list()[0].created_at_ms > 0);
         assert!(store.list()[0].completion_result.is_empty());
+        assert_eq!(store.list()[0].priority, TodoPriority::Low);
 
         let persisted = fs::read_to_string(&path).expect("migrated data should be readable");
         assert!(persisted.contains("createdAtMs"));

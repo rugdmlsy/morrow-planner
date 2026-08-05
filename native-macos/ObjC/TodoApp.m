@@ -345,7 +345,8 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
 @property CheckControl *check;
 @property NSTextField *titleLabel;
 @property NSTextField *subtitleLabel;
-- (void)configure:(NSDictionary *)summary handler:(void (^)(BOOL))handler;
+@property NSTextField *priorityLabel;
+- (void)configure:(NSDictionary *)summary handler:(void (^)(BOOL))handler english:(BOOL)english;
 @end
 @implementation TaskCellView
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -358,7 +359,10 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
         _subtitleLabel.font = [NSFont systemFontOfSize:11.5];
         _subtitleLabel.textColor = NSColor.secondaryLabelColor;
         _subtitleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-        [self addSubview:_check]; [self addSubview:_titleLabel]; [self addSubview:_subtitleLabel];
+        _priorityLabel = [NSTextField labelWithString:@""];
+        _priorityLabel.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold];
+        _priorityLabel.alignment = NSTextAlignmentCenter;
+        [self addSubview:_check]; [self addSubview:_titleLabel]; [self addSubview:_subtitleLabel]; [self addSubview:_priorityLabel];
     }
     return self;
 }
@@ -366,18 +370,32 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
     [super layout];
     CGFloat h = NSHeight(self.bounds);
     self.check.frame = NSMakeRect(10, (h - 20) / 2, 20, 20);
-    CGFloat x = 38, w = MAX(0, NSWidth(self.bounds) - x - 10);
-    self.titleLabel.frame = NSMakeRect(x, h / 2 + 3, w, 19);
+    CGFloat x = 38, badgeWidth = 28, rightInset = 10;
+    CGFloat w = MAX(0, NSWidth(self.bounds) - x - rightInset);
+    self.priorityLabel.frame = NSMakeRect(NSWidth(self.bounds) - badgeWidth - rightInset, h / 2 + 3, badgeWidth, 19);
+    self.titleLabel.frame = NSMakeRect(x, h / 2 + 3, MAX(0, w - badgeWidth - 6), 19);
     self.subtitleLabel.frame = NSMakeRect(x, h / 2 - 17, w, 17);
 }
-- (void)configure:(NSDictionary *)summary handler:(void (^)(BOOL))handler {
+- (void)configure:(NSDictionary *)summary handler:(void (^)(BOOL))handler english:(BOOL)english {
     self.titleLabel.stringValue = summary[@"title"] ?: @"";
     self.subtitleLabel.stringValue = summary[@"subtitle"] ?: @"";
+    NSString *priority = [summary[@"priority"] isKindOfClass:NSString.class] ? summary[@"priority"] : @"low";
+    if ([priority isEqualToString:@"high"]) {
+        self.priorityLabel.stringValue = english ? @"H" : @"高";
+        self.priorityLabel.textColor = NSColor.systemRedColor;
+    } else if ([priority isEqualToString:@"medium"]) {
+        self.priorityLabel.stringValue = english ? @"M" : @"中";
+        self.priorityLabel.textColor = NSColor.systemOrangeColor;
+    } else {
+        self.priorityLabel.stringValue = english ? @"L" : @"低";
+        self.priorityLabel.textColor = NSColor.tertiaryLabelColor;
+    }
     BOOL completed = [summary[@"completed"] boolValue];
     self.check.checked = completed;
     self.check.changeHandler = handler;
     self.titleLabel.textColor = completed ? NSColor.tertiaryLabelColor : NSColor.labelColor;
     self.subtitleLabel.textColor = completed ? NSColor.tertiaryLabelColor : NSColor.secondaryLabelColor;
+    if (completed) self.priorityLabel.textColor = NSColor.tertiaryLabelColor;
 }
 @end
 
@@ -399,9 +417,16 @@ typedef NS_ENUM(NSInteger, TodoViewMode) {
     TodoViewModePreview = 2,
 };
 
+typedef NS_ENUM(NSInteger, TodoPriority) {
+    TodoPriorityLow = 0,
+    TodoPriorityMedium = 1,
+    TodoPriorityHigh = 2,
+};
+
 typedef NS_ENUM(NSInteger, TodoSortMode) {
     TodoSortModeOriginal = 0,
     TodoSortModeNewestFirst = 1,
+    TodoSortModePriorityFirst = 2,
 };
 
 static NSString *const TodoLanguageDefaultsKey = @"TodoLanguage";
@@ -412,6 +437,22 @@ static NSNotificationName const TodoLanguageDidChangeNotification = @"TodoLangua
 
 static NSString *TodoLocalized(TodoLanguage language, NSString *chinese, NSString *english) {
     return language == TodoLanguageEnglish ? english : chinese;
+}
+
+static TodoPriority TodoPriorityFromValue(id value) {
+    if ([value isKindOfClass:NSString.class]) {
+        if ([value isEqualToString:@"high"]) return TodoPriorityHigh;
+        if ([value isEqualToString:@"medium"]) return TodoPriorityMedium;
+    }
+    return TodoPriorityLow;
+}
+
+static NSString *TodoPriorityValue(TodoPriority priority) {
+    switch (priority) {
+        case TodoPriorityHigh: return @"high";
+        case TodoPriorityMedium: return @"medium";
+        default: return @"low";
+    }
 }
 
 @interface SidebarView : NSView
@@ -439,7 +480,7 @@ static NSString *TodoLocalized(TodoLanguage language, NSString *chinese, NSStrin
         _toggleAllButton = [[LiteButton alloc] initWithTitle:@"全部完成" style:LiteButtonStylePlain];
         _filterControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"全部", @"待办", @"已完成"]];
         _datePresetControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"全部", @"24小时", @"近7天", @"自定义"]];
-        _sortControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"默认", @"最新优先"]];
+        _sortControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"默认", @"最新", @"优先级"]];
         _dateRangeLabel = [NSTextField labelWithString:@"全部首次定义时间"];
         _dateRangeLabel.font = [NSFont systemFontOfSize:10.5];
         _dateRangeLabel.textColor = NSColor.secondaryLabelColor;
@@ -503,6 +544,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @interface DetailView : NSView
 @property LiteButton *completeButton;
 @property LiteSegmentedControl *modeControl;
+@property NSTextField *priorityLabel;
+@property LiteSegmentedControl *priorityControl;
 @property LiteButton *closeButton;
 @property NSScrollView *editorScroll;
 @property NSTextView *editor;
@@ -526,6 +569,10 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     if ((self = [super initWithFrame:frame])) {
         _completeButton = [[LiteButton alloc] initWithTitle:@"标记完成" style:LiteButtonStylePlain];
         _modeControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"编辑", @"分栏", @"预览"]];
+        _priorityLabel = [NSTextField labelWithString:@"优先级"];
+        _priorityLabel.font = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
+        _priorityLabel.textColor = NSColor.secondaryLabelColor;
+        _priorityControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"低", @"中", @"高"]];
         _closeButton = [[LiteButton alloc] initWithTitle:@"关闭" style:LiteButtonStylePlain];
 
         _editor = [[NSTextView alloc] initWithFrame:NSZeroRect];
@@ -606,7 +653,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         _viewMode = TodoViewModeSplit;
 
         for (NSView *view in @[
-            _completeButton, _modeControl, _closeButton, _editorScroll, _placeholder,
+            _completeButton, _modeControl, _priorityLabel, _priorityControl, _closeButton, _editorScroll, _placeholder,
             _completionResultDisclosure, _completionResultScroll, _deleteButton, _saveStatus, _saveButton
         ]) {
             [self addSubview:view];
@@ -616,8 +663,9 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 }
 - (BOOL)isFlipped { return YES; }
 - (CGFloat)dividerThickness { return 1.0; }
+- (CGFloat)contentTop { return 91.0; }
 - (CGFloat)availableContentHeight {
-    return MAX(0.0, NSHeight(self.bounds) - 55.0 - 53.0);
+    return MAX(0.0, NSHeight(self.bounds) - [self contentTop] - 53.0);
 }
 - (CGFloat)resultHeight {
     CGFloat divider = [self dividerThickness];
@@ -630,7 +678,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 }
 - (NSRect)dividerRect {
     if (!self.resultExpanded) return NSZeroRect;
-    CGFloat footerTop = MAX(55.0, NSHeight(self.bounds) - 53.0);
+    CGFloat footerTop = MAX([self contentTop], NSHeight(self.bounds) - 53.0);
     CGFloat resultHeight = [self resultHeight];
     return NSMakeRect(0, footerTop - resultHeight - [self dividerThickness], NSWidth(self.bounds), [self dividerThickness]);
 }
@@ -659,13 +707,19 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.modeControl.frame = NSMakeRect((width - modeSize.width) / 2, 13, modeSize.width, 28);
     NSSize closeSize = self.closeButton.intrinsicContentSize;
     self.closeButton.frame = NSMakeRect(width - closeSize.width - 12, 12, closeSize.width, 30);
+    NSSize priorityLabelSize = self.priorityLabel.intrinsicContentSize;
+    NSSize prioritySize = self.priorityControl.intrinsicContentSize;
+    CGFloat priorityGroupWidth = priorityLabelSize.width + 8.0 + prioritySize.width;
+    CGFloat priorityGroupX = floor((width - priorityGroupWidth) / 2.0);
+    self.priorityLabel.frame = NSMakeRect(priorityGroupX, 58, priorityLabelSize.width, 18);
+    self.priorityControl.frame = NSMakeRect(priorityGroupX + priorityLabelSize.width + 8.0, 52, prioritySize.width, 28);
 
-    CGFloat footerTop = MAX(55.0, height - 53.0);
+    CGFloat footerTop = MAX([self contentTop], height - 53.0);
     NSRect documentFrame;
     CGFloat disclosureHeight = 38.0;
     if (self.resultExpanded) {
         NSRect divider = [self dividerRect];
-        documentFrame = NSMakeRect(0, 55, width, MAX(0.0, NSMinY(divider) - 55.0));
+        documentFrame = NSMakeRect(0, [self contentTop], width, MAX(0.0, NSMinY(divider) - [self contentTop]));
         CGFloat resultTop = NSMaxY(divider);
         CGFloat resultHeight = MAX(0.0, footerTop - resultTop);
         self.completionResultDisclosure.frame = NSMakeRect(0, resultTop, width, disclosureHeight);
@@ -678,8 +732,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
             SizeTextViewToScrollView(self.completionResultPreview, self.completionResultPreviewScroll);
         }
     } else {
-        CGFloat disclosureTop = MAX(55.0, footerTop - disclosureHeight);
-        documentFrame = NSMakeRect(0, 55, width, MAX(0.0, disclosureTop - 55.0));
+        CGFloat disclosureTop = MAX([self contentTop], footerTop - disclosureHeight);
+        documentFrame = NSMakeRect(0, [self contentTop], width, MAX(0.0, disclosureTop - [self contentTop]));
         self.completionResultDisclosure.frame = NSMakeRect(0, disclosureTop, width, disclosureHeight);
         self.completionResultScroll.frame = NSZeroRect;
         self.completionResultPreviewScroll.frame = NSZeroRect;
@@ -688,7 +742,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     [self layoutPaneFrame:documentFrame editorScroll:self.editorScroll previewScroll:self.previewScroll];
     SizeTextViewToScrollView(self.editor, self.editorScroll);
     if (self.preview && self.previewScroll) SizeTextViewToScrollView(self.preview, self.previewScroll);
-    self.placeholder.frame = NSMakeRect((width - 280) / 2, 55 + (NSHeight(documentFrame) - 24) / 2, 280, 24);
+    self.placeholder.frame = NSMakeRect((width - 280) / 2, [self contentTop] + (NSHeight(documentFrame) - 24) / 2, 280, 24);
 
     NSSize deleteSize = self.deleteButton.intrinsicContentSize;
     self.deleteButton.frame = NSMakeRect(12, height - 41, deleteSize.width, 30);
@@ -735,7 +789,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         NSEvent *next = [self.window nextEventMatchingMask:(NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp)];
         if (!next || next.type == NSEventTypeLeftMouseUp) break;
         NSPoint dragPoint = [self convertPoint:next.locationInWindow fromView:nil];
-        CGFloat footerTop = MAX(55.0, NSHeight(self.bounds) - 53.0);
+        CGFloat footerTop = MAX([self contentTop], NSHeight(self.bounds) - 53.0);
         CGFloat desiredResultHeight = footerTop - dragPoint.y - [self dividerThickness] / 2.0;
         self.resultRatio = desiredResultHeight / available;
         [self setNeedsLayout:YES];
@@ -749,8 +803,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     [NSColor.textBackgroundColor setFill];
     NSRectFill(self.bounds);
     [NSColor.separatorColor setFill];
-    CGFloat footerTop = MAX(55.0, NSHeight(self.bounds) - 53.0);
-    NSRectFill(NSMakeRect(0, 54, NSWidth(self.bounds), 1));
+    CGFloat footerTop = MAX([self contentTop], NSHeight(self.bounds) - 53.0);
+    NSRectFill(NSMakeRect(0, [self contentTop] - 1.0, NSWidth(self.bounds), 1));
     if (self.resultExpanded) {
         NSRectFill([self dividerRect]);
     } else if (!self.completionResultDisclosure.hidden) {
@@ -808,7 +862,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     NSInteger configuredViewMode = savedViewMode ? savedViewMode.integerValue : TodoViewModeSplit;
     self.viewMode = (TodoViewMode)MAX(TodoViewModeEdit, MIN(configuredViewMode, TodoViewModePreview));
     NSInteger savedSortMode = [NSUserDefaults.standardUserDefaults integerForKey:TodoSortModeDefaultsKey];
-    self.sortMode = savedSortMode == TodoSortModeNewestFirst ? TodoSortModeNewestFirst : TodoSortModeOriginal;
+    self.sortMode = (TodoSortMode)MAX(TodoSortModeOriginal, MIN(savedSortMode, TodoSortModePriorityFirst));
     self.split = [[NSSplitView alloc] initWithFrame:NSMakeRect(0,0,1120,780)]; self.split.vertical = YES; self.split.dividerStyle = NSSplitViewDividerStyleThin; self.split.delegate = self; self.split.autoresizingMask = NSViewWidthSizable|NSViewHeightSizable;
     self.sidebar = [[SidebarView alloc] initWithFrame:NSMakeRect(0,0,320,780)]; self.detail = [[DetailView alloc] initWithFrame:NSMakeRect(0,0,800,780)];
     self.detail.viewMode = self.viewMode;
@@ -824,13 +878,14 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.sidebar.filterControl.changeHandler = ^(NSInteger index) { weakSelf.filterIndex = index; [weakSelf applyFilter]; };
     self.sidebar.datePresetControl.changeHandler = ^(NSInteger index) { [weakSelf selectDateFilter:(TodoDateFilterMode)index]; };
     self.sidebar.sortControl.changeHandler = ^(NSInteger index) {
-        weakSelf.sortMode = index == TodoSortModeNewestFirst ? TodoSortModeNewestFirst : TodoSortModeOriginal;
+        weakSelf.sortMode = (TodoSortMode)MAX(TodoSortModeOriginal, MIN(index, TodoSortModePriorityFirst));
         [NSUserDefaults.standardUserDefaults setInteger:weakSelf.sortMode forKey:TodoSortModeDefaultsKey];
         [weakSelf applyFilter];
     };
     self.detail.completeButton.handler = ^{ [weakSelf toggleCurrent]; };
     self.detail.completionResultDisclosure.handler = ^(BOOL expanded) { [weakSelf setCompletionResultExpanded:expanded remember:YES]; };
     self.detail.modeControl.changeHandler = ^(NSInteger index) { [weakSelf changeViewMode:index]; };
+    self.detail.priorityControl.changeHandler = ^(NSInteger index) { [weakSelf changeCurrentPriority:(TodoPriority)index]; };
     self.detail.closeButton.handler = ^{ [weakSelf closeCurrent]; };
     self.detail.deleteButton.handler = ^{ [weakSelf deleteCurrent]; };
     self.detail.saveButton.handler = ^{ [weakSelf saveIfNeeded]; };
@@ -859,6 +914,37 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     if (normalizedMode == TodoViewModeEdit) [self showEditor];
     else if (normalizedMode == TodoViewModeSplit) [self showSplit];
     else [self showPreview];
+}
+- (void)changeCurrentPriority:(TodoPriority)priority {
+    TodoPriority normalizedPriority = (TodoPriority)MAX(TodoPriorityLow, MIN(priority, TodoPriorityHigh));
+    if (!self.currentTodo || !self.selectedID) {
+        self.detail.priorityControl.selectedIndex = TodoPriorityLow;
+        return;
+    }
+
+    TodoPriority previousPriority = TodoPriorityFromValue(self.currentTodo[@"priority"]);
+    if (normalizedPriority == previousPriority) return;
+    if (![self saveIfNeeded]) {
+        self.detail.priorityControl.selectedIndex = previousPriority;
+        return;
+    }
+
+    NSError *error = nil;
+    NSDictionary *todo = BridgeCall(@{
+        @"command": @"update",
+        @"id": self.selectedID,
+        @"priority": TodoPriorityValue(normalizedPriority),
+    }, &error);
+    if (!todo) {
+        self.detail.priorityControl.selectedIndex = previousPriority;
+        [self showError:error];
+        return;
+    }
+
+    self.currentTodo = todo;
+    self.detail.priorityControl.selectedIndex = normalizedPriority;
+    [self reloadSummaries];
+    [self updateSelection];
 }
 - (void)fallBackToEditorMode {
     self.viewMode = TodoViewModeEdit;
@@ -924,10 +1010,14 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.sidebar.createTaskButton.title = TodoLocalized(self.language, @"新建任务", @"New Task");
     self.sidebar.filterControl.labels = english ? @[@"All", @"Active", @"Done"] : @[@"全部", @"待办", @"已完成"];
     self.sidebar.datePresetControl.labels = english ? @[@"All", @"24h", @"7 days", @"Custom"] : @[@"全部", @"24小时", @"近7天", @"自定义"];
-    self.sidebar.sortControl.labels = english ? @[@"Original", @"Newest"] : @[@"默认", @"最新优先"];
+    self.sidebar.sortControl.labels = english ? @[@"Original", @"Newest", @"Priority"] : @[@"默认", @"最新", @"优先级"];
     self.sidebar.sortControl.selectedIndex = self.sortMode;
+    self.sidebar.sortControl.accessibilityLabel = TodoLocalized(self.language, @"任务排序", @"Task sorting");
     self.sidebar.clearButton.title = TodoLocalized(self.language, @"清除已完成", @"Clear Done");
 
+    self.detail.priorityLabel.stringValue = TodoLocalized(self.language, @"优先级", @"Priority");
+    self.detail.priorityControl.accessibilityLabel = TodoLocalized(self.language, @"任务优先级", @"Task priority");
+    self.detail.priorityControl.labels = english ? @[@"Low", @"Medium", @"High"] : @[@"低", @"中", @"高"];
     self.detail.modeControl.labels = english ? @[@"Edit", @"Split", @"Preview"] : @[@"编辑", @"分栏", @"预览"];
     self.detail.modeControl.selectedIndex = self.viewMode;
     self.detail.closeButton.title = TodoLocalized(self.language, @"关闭", @"Close");
@@ -956,7 +1046,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     if (row < 0 || row >= self.filtered.count) return nil; NSDictionary *summary = self.filtered[row];
     TaskCellView *cell = [tableView makeViewWithIdentifier:@"TaskCell" owner:self]; if (!cell) { cell = [[TaskCellView alloc] initWithFrame:NSZeroRect]; cell.identifier = @"TaskCell"; }
     NSNumber *todoID = summary[@"id"]; __weak typeof(self) weakSelf = self;
-    [cell configure:summary handler:^(BOOL completed) { [weakSelf toggleID:todoID completed:completed]; }]; return cell;
+    [cell configure:summary handler:^(BOOL completed) { [weakSelf toggleID:todoID completed:completed]; } english:(self.language == TodoLanguageEnglish)]; return cell;
 }
 - (void)tableViewSelectionDidChange:(NSNotification *)notification {
     NSInteger row = self.sidebar.tableView.selectedRow; if (row < 0 || row >= self.filtered.count) return; NSNumber *todoID = self.filtered[row][@"id"]; if ([todoID isEqual:self.selectedID]) return;
@@ -1006,8 +1096,17 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     }];
 
     NSArray<NSDictionary *> *filtered = [self.summaries filteredArrayUsingPredicate:predicate];
-    if (self.sortMode == TodoSortModeNewestFirst) {
+    if (self.sortMode != TodoSortModeOriginal) {
+        TodoSortMode sortMode = self.sortMode;
         filtered = [filtered sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+            if (sortMode == TodoSortModePriorityFirst) {
+                TodoPriority leftPriority = TodoPriorityFromValue(left[@"priority"]);
+                TodoPriority rightPriority = TodoPriorityFromValue(right[@"priority"]);
+                if (leftPriority != rightPriority) {
+                    return leftPriority > rightPriority ? NSOrderedAscending : NSOrderedDescending;
+                }
+            }
+
             NSNumber *leftTimestamp = [left[@"createdAtMs"] isKindOfClass:NSNumber.class] ? left[@"createdAtMs"] : @0;
             NSNumber *rightTimestamp = [right[@"createdAtMs"] isKindOfClass:NSNumber.class] ? right[@"createdAtMs"] : @0;
             NSComparisonResult timestampOrder = [rightTimestamp compare:leftTimestamp];
@@ -1180,6 +1279,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.detail.resultExpanded = expansionOverride ? expansionOverride.boolValue : defaultExpanded;
     self.dirty = NO;
     self.detail.modeControl.selectedIndex = self.viewMode;
+    self.detail.priorityControl.selectedIndex = TodoPriorityFromValue(todo[@"priority"]);
     [self updateCompletion];
     [self setDocumentAvailable:YES];
     [self setSaveStatus:TodoLocalized(self.language, @"已保存", @"Saved") error:NO];
@@ -1208,6 +1308,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 - (void)setDocumentAvailable:(BOOL)available {
     self.detail.completeButton.enabled = available;
     self.detail.modeControl.enabled = available;
+    self.detail.priorityControl.enabled = available;
     self.detail.closeButton.enabled = available;
     self.detail.deleteButton.enabled = available;
     self.detail.saveButton.enabled = available;
@@ -1224,6 +1325,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.suppressTextChanges = YES;
     self.detail.editor.string = @"";
     self.detail.completionResultEditor.string = @"";
+    self.detail.priorityControl.selectedIndex = TodoPriorityLow;
     self.suppressTextChanges = NO;
     self.editorSnapshot = @"";
     self.completionResultSnapshot = @"";
@@ -1505,6 +1607,9 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     if ([benchmarkSort isEqualToString:@"newest"]) {
         self.sortMode = TodoSortModeNewestFirst;
         self.sidebar.sortControl.selectedIndex = self.sortMode;
+    } else if ([benchmarkSort isEqualToString:@"priority"]) {
+        self.sortMode = TodoSortModePriorityFirst;
+        self.sidebar.sortControl.selectedIndex = self.sortMode;
     } else if ([benchmarkSort isEqualToString:@"original"]) {
         self.sortMode = TodoSortModeOriginal;
         self.sidebar.sortControl.selectedIndex = self.sortMode;
@@ -1529,6 +1634,10 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     NSString *forcedResultExpansion = environment[@"TODO_BENCHMARK_RESULT_EXPANDED"];
     if (forcedResultExpansion.length) {
         [self setCompletionResultExpanded:forcedResultExpansion.boolValue remember:NO];
+    }
+    NSString *forcedPriority = environment[@"TODO_BENCHMARK_PRIORITY"];
+    if (forcedPriority.length) {
+        [self changeCurrentPriority:TodoPriorityFromValue(forcedPriority)];
     }
 
     NSString *replacementDocument = environment[@"TODO_BENCHMARK_REPLACE_DOCUMENT"];
@@ -1574,14 +1683,16 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
             NSNumber *secondFilteredID = self.filtered.count > 1 ? self.filtered[1][@"id"] : nil;
             NSNumber *thirdFilteredID = self.filtered.count > 2 ? self.filtered[2][@"id"] : nil;
             fprintf(stderr,
-                    "mode=%s viewMode=%s sortMode=%s firstFilteredID=%s secondFilteredID=%s thirdFilteredID=%s selectedID=%s resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
+                    "mode=%s viewMode=%s sortMode=%s firstFilteredID=%s secondFilteredID=%s thirdFilteredID=%s selectedID=%s selectedPriority=%s priorityControl=%ld resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
                     mode.UTF8String,
                     self.viewMode == TodoViewModeEdit ? "edit" : (self.viewMode == TodoViewModeSplit ? "split" : "preview"),
-                    self.sortMode == TodoSortModeNewestFirst ? "newest" : "original",
+                    self.sortMode == TodoSortModeNewestFirst ? "newest" : (self.sortMode == TodoSortModePriorityFirst ? "priority" : "original"),
                     firstFilteredID.stringValue.UTF8String ?: "none",
                     secondFilteredID.stringValue.UTF8String ?: "none",
                     thirdFilteredID.stringValue.UTF8String ?: "none",
                     self.selectedID.stringValue.UTF8String ?: "none",
+                    TodoPriorityValue(TodoPriorityFromValue(self.currentTodo[@"priority"])).UTF8String,
+                    (long)self.detail.priorityControl.selectedIndex,
                     self.detail.resultExpanded,
                     self.detail.completionResultDisclosure.hidden,
                     NSWidth(self.detail.completionResultDisclosure.frame), NSHeight(self.detail.completionResultDisclosure.frame),

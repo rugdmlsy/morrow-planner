@@ -6,7 +6,7 @@ use std::{
     os::raw::c_char,
     panic::{catch_unwind, AssertUnwindSafe},
 };
-use todo_core::{Todo, TodoStore};
+use todo_core::{Todo, TodoPriority, TodoStore};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "camelCase")]
@@ -24,6 +24,7 @@ enum Request {
         content: Option<String>,
         #[serde(rename = "completionResult")]
         completion_result: Option<String>,
+        priority: Option<TodoPriority>,
         completed: Option<bool>,
     },
     Delete {
@@ -46,6 +47,7 @@ struct TodoSummary {
     title: String,
     subtitle: String,
     completed: bool,
+    priority: TodoPriority,
     created_at_ms: i64,
 }
 
@@ -188,11 +190,12 @@ fn handle_request(request: &str) -> Result<Value, String> {
             title,
             content,
             completion_result,
+            priority,
             completed,
         } => {
             let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
             let todo = store
-                .update(id, title, content, completion_result, completed)
+                .update(id, title, content, completion_result, priority, completed)
                 .map_err(|error| error.to_string())?;
             serde_json::to_value(todo).map_err(|error| error.to_string())
         }
@@ -243,6 +246,7 @@ fn todo_summary(todo: &Todo) -> TodoSummary {
             truncate(&subtitle, 76)
         },
         completed: todo.completed,
+        priority: todo.priority,
         created_at_ms: todo.created_at_ms,
     }
 }
@@ -572,12 +576,14 @@ mod tests {
             title: String::new(),
             content: "# Main title\n\nMore **detail** here".to_owned(),
             completion_result: "Verified output".to_owned(),
+            priority: TodoPriority::High,
             completed: false,
             created_at_ms: 1_234,
         });
 
         assert_eq!(summary.title, "Main title");
         assert_eq!(summary.subtitle, "More detail here");
+        assert_eq!(summary.priority, TodoPriority::High);
         assert_eq!(summary.created_at_ms, 1_234);
     }
 
@@ -596,6 +602,21 @@ mod tests {
             } => {
                 assert_eq!(id, 9);
                 assert_eq!(completion_result.as_deref(), Some("Tests passed"));
+            }
+            _ => panic!("expected update request"),
+        }
+    }
+
+    #[test]
+    fn accepts_priority_in_update_requests() {
+        let request: Request =
+            serde_json::from_str(r#"{"command":"update","id":9,"priority":"medium"}"#)
+                .expect("priority update request should parse");
+
+        match request {
+            Request::Update { id, priority, .. } => {
+                assert_eq!(id, 9);
+                assert_eq!(priority, Some(TodoPriority::Medium));
             }
             _ => panic!("expected update request"),
         }
