@@ -162,6 +162,12 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
     }
     return self;
 }
+- (void)setLabels:(NSArray<NSString *> *)labels {
+    _labels = [labels copy];
+    _selectedIndex = MAX(0, MIN(_selectedIndex, (NSInteger)_labels.count - 1));
+    [self invalidateIntrinsicContentSize];
+    self.needsDisplay = YES;
+}
 - (void)setSelectedIndex:(NSInteger)selectedIndex {
     _selectedIndex = MAX(0, MIN(selectedIndex, (NSInteger)self.labels.count - 1));
     self.needsDisplay = YES;
@@ -273,12 +279,23 @@ typedef NS_ENUM(NSInteger, TodoDateFilterMode) {
     TodoDateFilterModeCustom = 3,
 };
 
+typedef NS_ENUM(NSInteger, TodoLanguage) {
+    TodoLanguageChinese = 0,
+    TodoLanguageEnglish = 1,
+};
+
+static NSString *const TodoLanguageDefaultsKey = @"TodoLanguage";
+static NSNotificationName const TodoLanguageDidChangeNotification = @"TodoLanguageDidChangeNotification";
+
+static NSString *TodoLocalized(TodoLanguage language, NSString *chinese, NSString *english) {
+    return language == TodoLanguageEnglish ? english : chinese;
+}
+
 @interface SidebarView : NSView
 @property NSTextField *dateLabel;
 @property NSTextField *headingLabel;
 @property LiteButton *createTaskButton;
-@property NSTextField *addField;
-@property LiteButton *addButton;
+@property LiteSegmentedControl *languageControl;
 @property LiteButton *toggleAllButton;
 @property LiteSegmentedControl *filterControl;
 @property LiteSegmentedControl *datePresetControl;
@@ -294,8 +311,7 @@ typedef NS_ENUM(NSInteger, TodoDateFilterMode) {
         _dateLabel = [NSTextField labelWithString:@""]; _dateLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold]; _dateLabel.textColor = NSColor.systemOrangeColor;
         _headingLabel = [NSTextField labelWithString:@"今天要做什么？"]; _headingLabel.font = [NSFont systemFontOfSize:24 weight:NSFontWeightBold];
         _createTaskButton = [[LiteButton alloc] initWithTitle:@"新建任务" style:LiteButtonStyleBordered];
-        _addField = [[NSTextField alloc] initWithFrame:NSZeroRect]; _addField.placeholderString = @"快速添加一个任务…"; _addField.font = [NSFont systemFontOfSize:13];
-        _addButton = [[LiteButton alloc] initWithTitle:@"添加" style:LiteButtonStylePrimary];
+        _languageControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"中", @"EN"]];
         _toggleAllButton = [[LiteButton alloc] initWithTitle:@"全部完成" style:LiteButtonStylePlain];
         _filterControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"全部", @"待办", @"已完成"]];
         _datePresetControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"全部", @"24小时", @"近7天", @"自定义"]];
@@ -308,32 +324,32 @@ typedef NS_ENUM(NSInteger, TodoDateFilterMode) {
         _scrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect]; _scrollView.documentView = _tableView; _scrollView.hasVerticalScroller = YES; _scrollView.autohidesScrollers = YES; _scrollView.drawsBackground = NO;
         _countLabel = [NSTextField labelWithString:@""]; _countLabel.font = [NSFont systemFontOfSize:11]; _countLabel.textColor = NSColor.secondaryLabelColor;
         _clearButton = [[LiteButton alloc] initWithTitle:@"清除已完成" style:LiteButtonStyleDanger];
-        for (NSView *v in @[_dateLabel,_headingLabel,_createTaskButton,_addField,_addButton,_toggleAllButton,_filterControl,_datePresetControl,_dateRangeLabel,_scrollView,_countLabel,_clearButton]) [self addSubview:v];
+        for (NSView *v in @[_dateLabel,_headingLabel,_createTaskButton,_languageControl,_toggleAllButton,_filterControl,_datePresetControl,_dateRangeLabel,_scrollView,_countLabel,_clearButton]) [self addSubview:v];
     }
     return self;
 }
 - (BOOL)isFlipped { return YES; }
 - (void)layout {
     [super layout]; CGFloat w = NSWidth(self.bounds), h = NSHeight(self.bounds);
-    self.dateLabel.frame = NSMakeRect(16, 18, w - 32, 16);
+    NSSize languageSize = self.languageControl.intrinsicContentSize;
+    self.dateLabel.frame = NSMakeRect(16, 18, MAX(80, w - languageSize.width - 44), 16);
+    self.languageControl.frame = NSMakeRect(w - languageSize.width - 12, 10, languageSize.width, 28);
     NSSize newTaskSize = self.createTaskButton.intrinsicContentSize;
     self.headingLabel.frame = NSMakeRect(16, 39, MAX(80, w - newTaskSize.width - 48), 31);
     self.createTaskButton.frame = NSMakeRect(w - newTaskSize.width - 12, 40, newTaskSize.width, 30);
-    self.addField.frame = NSMakeRect(12, 83, MAX(80, w - 91), 32);
-    self.addButton.frame = NSMakeRect(w - 71, 84, 59, 30);
-    self.toggleAllButton.frame = NSMakeRect(10, 128, 70, 28);
-    NSSize filterSize = self.filterControl.intrinsicContentSize; self.filterControl.frame = NSMakeRect(w - filterSize.width - 12, 128, filterSize.width, 28);
+    self.toggleAllButton.frame = NSMakeRect(10, 83, self.toggleAllButton.intrinsicContentSize.width, 28);
+    NSSize filterSize = self.filterControl.intrinsicContentSize; self.filterControl.frame = NSMakeRect(w - filterSize.width - 12, 83, filterSize.width, 28);
     NSSize datePresetSize = self.datePresetControl.intrinsicContentSize;
-    self.datePresetControl.frame = NSMakeRect((w - datePresetSize.width) / 2, 168, datePresetSize.width, 28);
-    self.dateRangeLabel.frame = NSMakeRect(12, 199, w - 24, 17);
+    self.datePresetControl.frame = NSMakeRect((w - datePresetSize.width) / 2, 123, datePresetSize.width, 28);
+    self.dateRangeLabel.frame = NSMakeRect(12, 154, w - 24, 17);
     self.countLabel.frame = NSMakeRect(12, h - 31, w - 130, 18);
     NSSize clearSize = self.clearButton.intrinsicContentSize; self.clearButton.frame = NSMakeRect(w - clearSize.width - 8, h - 37, clearSize.width, 28);
-    self.scrollView.frame = NSMakeRect(0, 223, w, MAX(0, h - 223 - 42));
+    self.scrollView.frame = NSMakeRect(0, 178, w, MAX(0, h - 178 - 42));
 }
 - (void)drawRect:(NSRect)dirtyRect {
     [NSColor.controlBackgroundColor setFill]; NSRectFill(self.bounds);
     [NSColor.separatorColor setFill];
-    NSRectFill(NSMakeRect(0, 73, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, 121, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, 164, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, 222, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, NSHeight(self.bounds)-42, NSWidth(self.bounds), 1));
+    NSRectFill(NSMakeRect(0, 73, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, 116, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, 177, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, NSHeight(self.bounds)-42, NSWidth(self.bounds), 1));
 }
 @end
 
@@ -411,6 +427,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @property DetailView *detail;
 @property NSArray<NSDictionary *> *summaries;
 @property NSArray<NSDictionary *> *filtered;
+@property TodoLanguage language;
 @property NSInteger filterIndex;
 @property TodoDateFilterMode dateFilterMode;
 @property(nullable) NSDate *createdFromDate;
@@ -427,15 +444,19 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @implementation TodoController
 - (void)loadView {
     self.summaries = @[]; self.filtered = @[]; self.editorSnapshot = @"";
+    NSString *savedLanguage = [NSUserDefaults.standardUserDefaults stringForKey:TodoLanguageDefaultsKey];
+    NSString *benchmarkLanguage = NSProcessInfo.processInfo.environment[@"TODO_BENCHMARK_LANGUAGE"];
+    NSString *initialLanguage = benchmarkLanguage.length ? benchmarkLanguage : savedLanguage;
+    self.language = [initialLanguage isEqualToString:@"en"] ? TodoLanguageEnglish : TodoLanguageChinese;
     self.split = [[NSSplitView alloc] initWithFrame:NSMakeRect(0,0,1120,780)]; self.split.vertical = YES; self.split.dividerStyle = NSSplitViewDividerStyleThin; self.split.delegate = self; self.split.autoresizingMask = NSViewWidthSizable|NSViewHeightSizable;
     self.sidebar = [[SidebarView alloc] initWithFrame:NSMakeRect(0,0,320,780)]; self.detail = [[DetailView alloc] initWithFrame:NSMakeRect(0,0,800,780)];
     self.sidebar.autoresizingMask = NSViewHeightSizable;
     self.detail.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [self.split addArrangedSubview:self.sidebar]; [self.split addArrangedSubview:self.detail]; self.view = self.split;
-    self.sidebar.tableView.delegate = self; self.sidebar.tableView.dataSource = self; self.sidebar.addField.delegate = self; self.sidebar.addField.target = self; self.sidebar.addField.action = @selector(addTask:);
+    self.sidebar.tableView.delegate = self; self.sidebar.tableView.dataSource = self;
     __weak typeof(self) weakSelf = self;
-    self.sidebar.addButton.handler = ^{ [weakSelf addTask:nil]; };
     self.sidebar.createTaskButton.handler = ^{ [weakSelf addEditableTask]; };
+    self.sidebar.languageControl.changeHandler = ^(NSInteger index) { [weakSelf changeLanguage:(TodoLanguage)index]; };
     self.sidebar.toggleAllButton.handler = ^{ [weakSelf toggleAll]; };
     self.sidebar.clearButton.handler = ^{ [weakSelf clearCompleted]; };
     self.sidebar.filterControl.changeHandler = ^(NSInteger index) { weakSelf.filterIndex = index; [weakSelf applyFilter]; };
@@ -446,6 +467,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.detail.deleteButton.handler = ^{ [weakSelf deleteCurrent]; };
     self.detail.saveButton.handler = ^{ [weakSelf saveIfNeeded]; };
     self.detail.editor.delegate = self;
+    [self applyLanguage];
     [self setDocumentAvailable:NO]; [self reloadSummaries];
 }
 - (void)viewDidAppear {
@@ -454,6 +476,46 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     [self.split setPosition:320 ofDividerAtIndex:0];
     [self.split adjustSubviews];
     [self runBenchmarkMode];
+}
+- (void)changeLanguage:(TodoLanguage)language {
+    if (language == self.language) return;
+    self.language = language;
+    [NSUserDefaults.standardUserDefaults setObject:(language == TodoLanguageEnglish ? @"en" : @"zh") forKey:TodoLanguageDefaultsKey];
+    [self applyLanguage];
+}
+- (void)applyLanguage {
+    BOOL english = self.language == TodoLanguageEnglish;
+    self.sidebar.languageControl.selectedIndex = self.language;
+
+    NSDateFormatter *dateFormatter = [NSDateFormatter new];
+    dateFormatter.locale = [NSLocale localeWithLocaleIdentifier:(english ? @"en_US" : @"zh_CN")];
+    dateFormatter.dateFormat = english ? @"EEEE, MMM d" : @"M月d日 EEEE";
+    self.sidebar.dateLabel.stringValue = [dateFormatter stringFromDate:NSDate.date];
+
+    self.sidebar.headingLabel.stringValue = TodoLocalized(self.language, @"今天要做什么？", @"Today's tasks");
+    self.sidebar.createTaskButton.title = TodoLocalized(self.language, @"新建任务", @"New Task");
+    self.sidebar.filterControl.labels = english ? @[@"All", @"Active", @"Done"] : @[@"全部", @"待办", @"已完成"];
+    self.sidebar.datePresetControl.labels = english ? @[@"All", @"24h", @"7 days", @"Custom"] : @[@"全部", @"24小时", @"近7天", @"自定义"];
+    self.sidebar.clearButton.title = TodoLocalized(self.language, @"清除已完成", @"Clear Done");
+
+    self.detail.modeControl.labels = english ? @[@"Edit", @"Preview"] : @[@"编辑", @"预览"];
+    self.detail.closeButton.title = TodoLocalized(self.language, @"关闭", @"Close");
+    self.detail.placeholder.stringValue = TodoLocalized(self.language, @"从左侧选择一个任务", @"Select a task from the sidebar");
+    self.detail.deleteButton.title = TodoLocalized(self.language, @"删除", @"Delete");
+    self.detail.saveButton.title = TodoLocalized(self.language, @"保存", @"Save");
+
+    [self updateCompletion];
+    [self updateDateRangeControls];
+    [self applyFilter];
+    if (self.currentTodo) {
+        [self setSaveStatus:(self.dirty ? TodoLocalized(self.language, @"等待保存…", @"Waiting to save…") : TodoLocalized(self.language, @"已保存", @"Saved")) error:NO];
+    }
+
+    [self.sidebar setNeedsLayout:YES];
+    [self.sidebar layoutSubtreeIfNeeded];
+    [self.detail setNeedsLayout:YES];
+    [self.detail layoutSubtreeIfNeeded];
+    [NSNotificationCenter.defaultCenter postNotificationName:TodoLanguageDidChangeNotification object:self];
 }
 - (CGFloat)splitView:(NSSplitView *)splitView constrainMinCoordinate:(CGFloat)proposedMinimumPosition ofSubviewAt:(NSInteger)dividerIndex { return 280; }
 - (CGFloat)splitView:(NSSplitView *)splitView constrainMaxCoordinate:(CGFloat)proposedMaximumPosition ofSubviewAt:(NSInteger)dividerIndex { return MIN(380, NSWidth(splitView.bounds)-440); }
@@ -520,12 +582,18 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     }
 
     if (self.dateFilterMode != TodoDateFilterModeAll) {
-        self.sidebar.countLabel.stringValue = [NSString stringWithFormat:@"%ld 项显示 · %ld 项任务", (long)self.filtered.count, (long)self.summaries.count];
+        self.sidebar.countLabel.stringValue = self.language == TodoLanguageEnglish
+            ? [NSString stringWithFormat:@"%ld shown · %ld tasks", (long)self.filtered.count, (long)self.summaries.count]
+            : [NSString stringWithFormat:@"%ld 项显示 · %ld 项任务", (long)self.filtered.count, (long)self.summaries.count];
     } else {
-        self.sidebar.countLabel.stringValue = [NSString stringWithFormat:@"%ld 项待办 · %ld 项任务", (long)active, (long)self.summaries.count];
+        self.sidebar.countLabel.stringValue = self.language == TodoLanguageEnglish
+            ? [NSString stringWithFormat:@"%ld active · %ld tasks", (long)active, (long)self.summaries.count]
+            : [NSString stringWithFormat:@"%ld 项待办 · %ld 项任务", (long)active, (long)self.summaries.count];
     }
     self.sidebar.clearButton.hidden = !hasCompleted;
-    self.sidebar.toggleAllButton.title = active == 0 && self.summaries.count ? @"全部恢复" : @"全部完成";
+    self.sidebar.toggleAllButton.title = active == 0 && self.summaries.count
+        ? TodoLocalized(self.language, @"全部恢复", @"Restore All")
+        : TodoLocalized(self.language, @"全部完成", @"Complete All");
     [self.sidebar.tableView reloadData];
     [self updateSelection];
 }
@@ -558,8 +626,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         : now;
 
     NSView *accessory = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 330, 76)];
-    NSTextField *fromLabel = [NSTextField labelWithString:@"开始日期"];
-    NSTextField *toLabel = [NSTextField labelWithString:@"结束日期"];
+    NSTextField *fromLabel = [NSTextField labelWithString:TodoLocalized(self.language, @"开始日期", @"Start date")];
+    NSTextField *toLabel = [NSTextField labelWithString:TodoLocalized(self.language, @"结束日期", @"End date")];
     fromLabel.frame = NSMakeRect(0, 48, 70, 20);
     toLabel.frame = NSMakeRect(0, 10, 70, 20);
 
@@ -578,12 +646,12 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     [accessory addSubview:toPicker];
 
     NSAlert *alert = [NSAlert new];
-    alert.messageText = @"按首次定义时间筛选";
-    alert.informativeText = @"开始和结束日期均包含在筛选范围内。";
+    alert.messageText = TodoLocalized(self.language, @"按首次定义时间筛选", @"Filter by creation time");
+    alert.informativeText = TodoLocalized(self.language, @"开始和结束日期均包含在筛选范围内。", @"Both start and end dates are included.");
     alert.accessoryView = accessory;
-    [alert addButtonWithTitle:@"应用"];
-    [alert addButtonWithTitle:@"取消"];
-    [alert addButtonWithTitle:@"全部时间"];
+    [alert addButtonWithTitle:TodoLocalized(self.language, @"应用", @"Apply")];
+    [alert addButtonWithTitle:TodoLocalized(self.language, @"取消", @"Cancel")];
+    [alert addButtonWithTitle:TodoLocalized(self.language, @"全部时间", @"All Time")];
 
     __weak typeof(self) weakSelf = self;
     [alert beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse response) {
@@ -603,7 +671,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         NSDate *endExclusive = [calendar dateByAddingUnit:NSCalendarUnitDay value:1 toDate:endDay options:0];
         if ([start compare:endExclusive] != NSOrderedAscending) {
             strongSelf.sidebar.datePresetControl.selectedIndex = strongSelf.dateFilterMode;
-            NSError *error = [NSError errorWithDomain:TodoErrorDomain code:6 userInfo:@{NSLocalizedDescriptionKey: @"开始日期不能晚于结束日期"}];
+            NSError *error = [NSError errorWithDomain:TodoErrorDomain code:6 userInfo:@{NSLocalizedDescriptionKey: TodoLocalized(strongSelf.language, @"开始日期不能晚于结束日期", @"The start date cannot be later than the end date")}];
             [strongSelf showError:error];
             return;
         }
@@ -619,38 +687,37 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.sidebar.datePresetControl.selectedIndex = self.dateFilterMode;
 
     if (self.dateFilterMode == TodoDateFilterModeLast24Hours) {
-        self.sidebar.dateRangeLabel.stringValue = @"滚动范围：过去 24 小时";
+        self.sidebar.dateRangeLabel.stringValue = TodoLocalized(self.language, @"滚动范围：过去 24 小时", @"Rolling range: last 24 hours");
         return;
     }
     if (self.dateFilterMode == TodoDateFilterModeLast7Days) {
-        self.sidebar.dateRangeLabel.stringValue = @"滚动范围：过去 7 天";
+        self.sidebar.dateRangeLabel.stringValue = TodoLocalized(self.language, @"滚动范围：过去 7 天", @"Rolling range: last 7 days");
         return;
     }
     if (self.dateFilterMode != TodoDateFilterModeCustom || !self.createdFromDate || !self.createdToExclusiveDate) {
-        self.sidebar.dateRangeLabel.stringValue = @"全部首次定义时间";
+        self.sidebar.dateRangeLabel.stringValue = TodoLocalized(self.language, @"全部首次定义时间", @"All creation times");
         return;
     }
 
     NSDate *inclusiveEnd = [NSCalendar.currentCalendar dateByAddingUnit:NSCalendarUnitDay value:-1 toDate:self.createdToExclusiveDate options:0];
     NSDateFormatter *formatter = [NSDateFormatter new];
-    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:(self.language == TodoLanguageEnglish ? @"en_US" : @"zh_CN")];
     formatter.dateFormat = @"yyyy-MM-dd";
-    self.sidebar.dateRangeLabel.stringValue = [NSString stringWithFormat:@"%@ 至 %@", [formatter stringFromDate:self.createdFromDate], [formatter stringFromDate:inclusiveEnd]];
+    self.sidebar.dateRangeLabel.stringValue = [NSString stringWithFormat:(self.language == TodoLanguageEnglish ? @"%@ to %@" : @"%@ 至 %@"), [formatter stringFromDate:self.createdFromDate], [formatter stringFromDate:inclusiveEnd]];
 }
 - (NSDictionary *)summaryForID:(NSNumber *)todoID { for (NSDictionary *s in self.summaries) if ([s[@"id"] isEqual:todoID]) return s; return nil; }
 - (void)updateSelection { NSInteger row = NSNotFound; if (self.selectedID) for (NSInteger i=0;i<self.filtered.count;i++) if ([self.filtered[i][@"id"] isEqual:self.selectedID]) { row=i; break; } if (row==NSNotFound) [self.sidebar.tableView deselectAll:nil]; else { [self.sidebar.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:row] byExtendingSelection:NO]; [self.sidebar.tableView scrollRowToVisible:row]; } }
-- (void)selectID:(NSNumber *)todoID { NSError *error=nil; NSDictionary *todo=BridgeCall(@{@"command":@"get",@"id":todoID},&error); if (!todo) { [self showError:error]; [self updateSelection]; return; } self.selectedID=todoID; self.currentTodo=todo; [self releasePreview]; self.suppressTextChanges=YES; self.detail.editor.string=[self documentText:todo]; self.suppressTextChanges=NO; self.editorSnapshot=[[self documentText:todo] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]; self.dirty=NO; self.detail.modeControl.selectedIndex=0; [self updateCompletion]; [self setDocumentAvailable:YES]; [self setSaveStatus:@"已保存" error:NO]; [self updateSelection]; [self.view.window makeFirstResponder:self.detail.editor]; }
+- (void)selectID:(NSNumber *)todoID { NSError *error=nil; NSDictionary *todo=BridgeCall(@{@"command":@"get",@"id":todoID},&error); if (!todo) { [self showError:error]; [self updateSelection]; return; } self.selectedID=todoID; self.currentTodo=todo; [self releasePreview]; self.suppressTextChanges=YES; self.detail.editor.string=[self documentText:todo]; self.suppressTextChanges=NO; self.editorSnapshot=[[self documentText:todo] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]; self.dirty=NO; self.detail.modeControl.selectedIndex=0; [self updateCompletion]; [self setDocumentAvailable:YES]; [self setSaveStatus:TodoLocalized(self.language, @"已保存", @"Saved") error:NO]; [self updateSelection]; [self.view.window makeFirstResponder:self.detail.editor]; }
 - (NSString *)documentText:(NSDictionary *)todo { NSString *title=[todo[@"title"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @""; NSString *content=[todo[@"content"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @""; if (!title.length) return content; if (!content.length) return title; return [NSString stringWithFormat:@"%@\n\n%@",title,content]; }
 - (void)setDocumentAvailable:(BOOL)available { self.detail.placeholder.hidden=available; self.detail.editorScroll.hidden=!available; self.detail.completeButton.enabled=available; self.detail.modeControl.enabled=available; self.detail.closeButton.enabled=available; self.detail.deleteButton.enabled=available; self.detail.saveButton.enabled=available; }
 - (void)clearCurrent { [self.saveTimer invalidate]; self.saveTimer=nil; [self releasePreview]; self.currentTodo=nil; self.suppressTextChanges=YES; self.detail.editor.string=@""; self.suppressTextChanges=NO; self.editorSnapshot=@""; self.dirty=NO; [self setDocumentAvailable:NO]; [self setSaveStatus:@"" error:NO]; }
-- (void)textDidChange:(NSNotification *)notification { if (self.suppressTextChanges || !self.currentTodo) return; NSString *document=[self.detail.editor.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]; self.dirty=![document isEqual:self.editorSnapshot]; [self setSaveStatus:self.dirty?@"等待保存…":@"已保存" error:NO]; [self.saveTimer invalidate]; if (self.dirty) { __weak typeof(self) weakSelf=self; self.saveTimer=[NSTimer scheduledTimerWithTimeInterval:0.65 repeats:NO block:^(NSTimer *timer){ [weakSelf saveIfNeeded]; }]; } }
-- (BOOL)saveIfNeeded { [self.saveTimer invalidate]; self.saveTimer=nil; if (!self.currentTodo) return YES; NSString *document=[self.detail.editor.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]; if (!document.length) { [self setSaveStatus:@"内容不能为空" error:YES]; NSBeep(); return NO; } if (!self.dirty && [document isEqual:self.editorSnapshot]) return YES; [self setSaveStatus:@"正在保存…" error:NO]; NSError *error=nil; NSDictionary *todo=BridgeCall(@{@"command":@"update",@"id":self.selectedID,@"title":@"",@"content":document},&error); if (!todo) { [self setSaveStatus:@"保存失败" error:YES]; [self showError:error]; return NO; } self.currentTodo=todo; self.editorSnapshot=[[self documentText:todo] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]; self.dirty=![[self.detail.editor.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] isEqual:self.editorSnapshot]; [self setSaveStatus:self.dirty?@"有未保存修改":@"已保存" error:NO]; [self reloadSummaries]; return !self.dirty; }
+- (void)textDidChange:(NSNotification *)notification { if (self.suppressTextChanges || !self.currentTodo) return; NSString *document=[self.detail.editor.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]; self.dirty=![document isEqual:self.editorSnapshot]; [self setSaveStatus:self.dirty?TodoLocalized(self.language, @"等待保存…", @"Waiting to save…"):TodoLocalized(self.language, @"已保存", @"Saved") error:NO]; [self.saveTimer invalidate]; if (self.dirty) { __weak typeof(self) weakSelf=self; self.saveTimer=[NSTimer scheduledTimerWithTimeInterval:0.65 repeats:NO block:^(NSTimer *timer){ [weakSelf saveIfNeeded]; }]; } }
+- (BOOL)saveIfNeeded { [self.saveTimer invalidate]; self.saveTimer=nil; if (!self.currentTodo) return YES; NSString *document=[self.detail.editor.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]; if (!document.length) { [self setSaveStatus:TodoLocalized(self.language, @"内容不能为空", @"Content cannot be empty") error:YES]; NSBeep(); return NO; } if (!self.dirty && [document isEqual:self.editorSnapshot]) return YES; [self setSaveStatus:TodoLocalized(self.language, @"正在保存…", @"Saving…") error:NO]; NSError *error=nil; NSDictionary *todo=BridgeCall(@{@"command":@"update",@"id":self.selectedID,@"title":@"",@"content":document},&error); if (!todo) { [self setSaveStatus:TodoLocalized(self.language, @"保存失败", @"Save failed") error:YES]; [self showError:error]; return NO; } self.currentTodo=todo; self.editorSnapshot=[[self documentText:todo] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]; self.dirty=![[self.detail.editor.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] isEqual:self.editorSnapshot]; [self setSaveStatus:self.dirty?TodoLocalized(self.language, @"有未保存修改", @"Unsaved changes"):TodoLocalized(self.language, @"已保存", @"Saved") error:NO]; [self reloadSummaries]; return !self.dirty; }
 - (void)setSaveStatus:(NSString *)status error:(BOOL)isError { self.detail.saveStatus.stringValue=status; self.detail.saveStatus.textColor=isError?NSColor.systemRedColor:NSColor.secondaryLabelColor; }
-- (void)addTask:(id)sender { NSString *title=[self.sidebar.addField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]; if (!title.length) return; NSError *error=nil; NSDictionary *summary=BridgeCall(@{@"command":@"add",@"title":title},&error); if (!summary){[self showError:error];return;} self.sidebar.addField.stringValue=@""; [self reloadSummaries]; [self selectID:summary[@"id"]]; }
 - (void)addEditableTask {
     if (![self saveIfNeeded]) return;
     NSError *error = nil;
-    NSDictionary *summary = BridgeCall(@{@"command": @"add", @"title": @"新任务"}, &error);
+    NSDictionary *summary = BridgeCall(@{@"command": @"add", @"title": TodoLocalized(self.language, @"新任务", @"New Task")}, &error);
     if (!summary) {
         [self showError:error];
         return;
@@ -664,7 +731,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 - (void)toggleAll { if (![self saveIfNeeded]) return; BOOL complete=NO; for (NSDictionary *s in self.summaries) if (![s[@"completed"] boolValue]) {complete=YES;break;} NSError *error=nil; id value=BridgeCall(@{@"command":@"setAllCompleted",@"completed":@(complete)},&error); if(!value){[self showError:error];return;} self.summaries=value; [self applyFilter]; if(self.selectedID)[self selectID:self.selectedID]; }
 - (void)clearCompleted { if (![self saveIfNeeded]) return; BOOL selectedCompleted=[self summaryForID:self.selectedID][@"completed"]?[ [self summaryForID:self.selectedID][@"completed"] boolValue]:NO; NSError *error=nil; if(!BridgeCall(@{@"command":@"clearCompleted"},&error)){[self showError:error];return;} if(selectedCompleted){self.selectedID=nil;[self clearCurrent];} [self reloadSummaries]; }
 - (void)toggleCurrent { if(![self saveIfNeeded]||!self.currentTodo)return; [self toggleID:self.selectedID completed:![self.currentTodo[@"completed"] boolValue]]; }
-- (void)updateCompletion { BOOL completed=[self.currentTodo[@"completed"] boolValue]; self.detail.completeButton.title=completed?@"恢复为待办":@"标记完成"; self.detail.completeButton.foregroundColor=completed?NSColor.systemGreenColor:NSColor.secondaryLabelColor; [self.detail setNeedsLayout:YES]; [self.detail layoutSubtreeIfNeeded]; }
+- (void)updateCompletion { BOOL completed=[self.currentTodo[@"completed"] boolValue]; self.detail.completeButton.title=completed?TodoLocalized(self.language, @"恢复为待办", @"Restore to Active"):TodoLocalized(self.language, @"标记完成", @"Mark Complete"); self.detail.completeButton.foregroundColor=completed?NSColor.systemGreenColor:NSColor.secondaryLabelColor; [self.detail setNeedsLayout:YES]; [self.detail layoutSubtreeIfNeeded]; }
 - (void)deleteCurrent { if(!self.selectedID)return; NSError *error=nil; if(!BridgeCall(@{@"command":@"delete",@"id":self.selectedID},&error)){[self showError:error];return;} self.selectedID=nil; [self clearCurrent]; [self reloadSummaries]; }
 - (void)closeCurrent { if(![self saveIfNeeded])return; self.selectedID=nil; [self clearCurrent]; [self updateSelection]; }
 - (void)showEditor { [self releasePreview]; self.detail.editorScroll.hidden=NO; [self.detail setNeedsLayout:YES]; [self.detail layoutSubtreeIfNeeded]; SizeTextViewToScrollView(self.detail.editor, self.detail.editorScroll); [self.view.window makeFirstResponder:self.detail.editor]; }
@@ -699,7 +766,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         [self releasePreview];
         NSError *error = [NSError errorWithDomain:TodoErrorDomain
                                              code:5
-                                         userInfo:@{NSLocalizedDescriptionKey: exception.reason ?: @"Markdown 预览失败"}];
+                                         userInfo:@{NSLocalizedDescriptionKey: exception.reason ?: TodoLocalized(self.language, @"Markdown 预览失败", @"Markdown preview failed")}];
         fprintf(stderr, "preview exception: %s (%s)\n", exception.name.UTF8String, exception.reason.UTF8String);
         [self showError:error];
     }
@@ -746,8 +813,11 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
             NSRect editorUsed = [self.detail.editor.layoutManager usedRectForTextContainer:self.detail.editor.textContainer];
             NSRect previewUsed = self.detail.preview ? [self.detail.preview.layoutManager usedRectForTextContainer:self.detail.preview.textContainer] : NSZeroRect;
             fprintf(stderr,
-                    "mode=%s todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu\n",
+                    "mode=%s language=%s heading=%s createTask=%s todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu\n",
                     mode.UTF8String,
+                    self.language == TodoLanguageEnglish ? "en" : "zh",
+                    self.sidebar.headingLabel.stringValue.UTF8String,
+                    self.sidebar.createTaskButton.title.UTF8String,
                     (unsigned long)self.summaries.count, (unsigned long)self.filtered.count,
                     NSWidth(self.view.window.contentView.bounds), NSHeight(self.view.window.contentView.bounds),
                     NSWidth(self.split.bounds), NSHeight(self.split.bounds),
@@ -773,11 +843,44 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @end
 @implementation AppDelegate
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular]; [self configureMenus]; self.controller=[TodoController new]; self.window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,1120,780) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];self.window.title=@"Todo";self.window.titleVisibility=NSWindowTitleVisible;self.window.titlebarAppearsTransparent=NO;self.window.minSize=NSMakeSize(720,560);self.window.tabbingMode=NSWindowTabbingModeDisallowed;self.window.contentViewController=self.controller;[self.window center];[self.window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];dispatch_after(dispatch_time(DISPATCH_TIME_NOW,2*NSEC_PER_SEC),dispatch_get_main_queue(),^{malloc_zone_pressure_relief(NULL,0);});
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    self.controller = [TodoController new];
+    [self configureMenus];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(languageDidChange:) name:TodoLanguageDidChangeNotification object:nil];
+    self.window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,1120,780) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];self.window.title=@"Todo";self.window.titleVisibility=NSWindowTitleVisible;self.window.titlebarAppearsTransparent=NO;self.window.minSize=NSMakeSize(720,560);self.window.tabbingMode=NSWindowTabbingModeDisallowed;self.window.contentViewController=self.controller;[self.window center];[self.window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];dispatch_after(dispatch_time(DISPATCH_TIME_NOW,2*NSEC_PER_SEC),dispatch_get_main_queue(),^{malloc_zone_pressure_relief(NULL,0);});
 }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender{return YES;}
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender{return [self.controller prepareForTermination]?NSTerminateNow:NSTerminateCancel;}
-- (void)configureMenus { NSMenu *main=[NSMenu new];NSMenuItem *appItem=[NSMenuItem new];[main addItem:appItem];NSMenu *app=[NSMenu new];[app addItemWithTitle:@"退出 Todo" action:@selector(terminate:) keyEquivalent:@"q"];appItem.submenu=app;NSMenuItem *fileItem=[NSMenuItem new];[main addItem:fileItem];NSMenu *file=[[NSMenu alloc]initWithTitle:@"文件"];NSMenuItem *save=[file addItemWithTitle:@"保存" action:@selector(saveCurrent:) keyEquivalent:@"s"];save.target=self.controller;[file addItemWithTitle:@"关闭窗口" action:@selector(performClose:) keyEquivalent:@"w"];fileItem.submenu=file;NSMenuItem *editItem=[NSMenuItem new];[main addItem:editItem];NSMenu *edit=[[NSMenu alloc]initWithTitle:@"编辑"];[edit addItemWithTitle:@"撤销" action:NSSelectorFromString(@"undo:") keyEquivalent:@"z"];[edit addItemWithTitle:@"剪切" action:@selector(cut:) keyEquivalent:@"x"];[edit addItemWithTitle:@"复制" action:@selector(copy:) keyEquivalent:@"c"];[edit addItemWithTitle:@"粘贴" action:@selector(paste:) keyEquivalent:@"v"];[edit addItemWithTitle:@"全选" action:@selector(selectAll:) keyEquivalent:@"a"];editItem.submenu=edit;NSApp.mainMenu=main; }
+- (void)languageDidChange:(NSNotification *)notification { [self configureMenus]; }
+- (void)configureMenus {
+    TodoLanguage language = self.controller ? self.controller.language : TodoLanguageChinese;
+    NSMenu *main = [NSMenu new];
+
+    NSMenuItem *appItem = [NSMenuItem new];
+    [main addItem:appItem];
+    NSMenu *app = [NSMenu new];
+    [app addItemWithTitle:TodoLocalized(language, @"退出 Todo", @"Quit Todo") action:@selector(terminate:) keyEquivalent:@"q"];
+    appItem.submenu = app;
+
+    NSMenuItem *fileItem = [NSMenuItem new];
+    [main addItem:fileItem];
+    NSMenu *file = [[NSMenu alloc] initWithTitle:TodoLocalized(language, @"文件", @"File")];
+    NSMenuItem *save = [file addItemWithTitle:TodoLocalized(language, @"保存", @"Save") action:@selector(saveCurrent:) keyEquivalent:@"s"];
+    save.target = self.controller;
+    [file addItemWithTitle:TodoLocalized(language, @"关闭窗口", @"Close Window") action:@selector(performClose:) keyEquivalent:@"w"];
+    fileItem.submenu = file;
+
+    NSMenuItem *editItem = [NSMenuItem new];
+    [main addItem:editItem];
+    NSMenu *edit = [[NSMenu alloc] initWithTitle:TodoLocalized(language, @"编辑", @"Edit")];
+    [edit addItemWithTitle:TodoLocalized(language, @"撤销", @"Undo") action:NSSelectorFromString(@"undo:") keyEquivalent:@"z"];
+    [edit addItemWithTitle:TodoLocalized(language, @"剪切", @"Cut") action:@selector(cut:) keyEquivalent:@"x"];
+    [edit addItemWithTitle:TodoLocalized(language, @"复制", @"Copy") action:@selector(copy:) keyEquivalent:@"c"];
+    [edit addItemWithTitle:TodoLocalized(language, @"粘贴", @"Paste") action:@selector(paste:) keyEquivalent:@"v"];
+    [edit addItemWithTitle:TodoLocalized(language, @"全选", @"Select All") action:@selector(selectAll:) keyEquivalent:@"a"];
+    editItem.submenu = edit;
+    NSApp.mainMenu = main;
+}
 @end
 
 int main(int argc, const char *argv[]) {
