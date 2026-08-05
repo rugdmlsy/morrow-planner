@@ -390,6 +390,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @property LiteButton *saveButton;
 @property(nullable) NSScrollView *previewScroll;
 @property(nullable) NSTextView *preview;
+@property(nullable) NSScrollView *completionResultPreviewScroll;
+@property(nullable) NSTextView *completionResultPreview;
 @property(nonatomic) BOOL resultVisible;
 @property(nonatomic) CGFloat resultRatio;
 @end
@@ -526,7 +528,11 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         CGFloat resultHeight = MAX(0.0, footerTop - resultTop);
         self.completionResultLabel.frame = NSMakeRect(16, resultTop + 8, width - 32, 18);
         self.completionResultScroll.frame = NSMakeRect(0, resultTop + 30, width, MAX(0.0, resultHeight - 30));
+        self.completionResultPreviewScroll.frame = self.completionResultScroll.frame;
         SizeTextViewToScrollView(self.completionResultEditor, self.completionResultScroll);
+        if (self.completionResultPreview && self.completionResultPreviewScroll) {
+            SizeTextViewToScrollView(self.completionResultPreview, self.completionResultPreviewScroll);
+        }
     } else {
         documentFrame = NSMakeRect(0, 55, width, MAX(0.0, footerTop - 55.0));
     }
@@ -1071,9 +1077,11 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     [self releasePreview];
     self.detail.modeControl.selectedIndex = 0;
     self.detail.editorScroll.hidden = NO;
+    self.detail.completionResultScroll.hidden = !self.detail.resultVisible;
     [self.detail setNeedsLayout:YES];
     [self.detail layoutSubtreeIfNeeded];
     SizeTextViewToScrollView(self.detail.editor, self.detail.editorScroll);
+    SizeTextViewToScrollView(self.detail.completionResultEditor, self.detail.completionResultScroll);
     [self.view.window makeFirstResponder:self.detail.editor];
 }
 - (void)showPreview {
@@ -1083,26 +1091,48 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     }
 
     @try {
-        NSError *error = nil;
-        NSArray *runs = BridgeCall(@{@"command": @"renderMarkdown", @"markdown": self.detail.editor.string}, &error);
-        if (!runs) {
-            [self showError:error];
+        NSError *documentError = nil;
+        NSArray *documentRuns = BridgeCall(
+            @{@"command": @"renderMarkdown", @"markdown": self.detail.editor.string},
+            &documentError
+        );
+        if (!documentRuns) {
+            [self showError:documentError];
             [self fallBackToEditorMode];
             return;
         }
 
-        NSTextView *preview = [self ensurePreview];
-        NSAttributedString *rendered = [self attributedMarkdown:runs];
-        [preview.textStorage setAttributedString:rendered];
+        NSError *resultError = nil;
+        NSArray *resultRuns = BridgeCall(
+            @{@"command": @"renderMarkdown", @"markdown": self.detail.completionResultEditor.string},
+            &resultError
+        );
+        if (!resultRuns) {
+            [self showError:resultError];
+            [self fallBackToEditorMode];
+            return;
+        }
+
+        NSTextView *documentPreview = [self ensurePreview];
+        NSTextView *resultPreview = [self ensureCompletionResultPreview];
+        [documentPreview.textStorage setAttributedString:[self attributedMarkdown:documentRuns]];
+        [resultPreview.textStorage setAttributedString:[self attributedMarkdown:resultRuns]];
+
         self.detail.modeControl.selectedIndex = 1;
         self.detail.editorScroll.hidden = YES;
+        self.detail.completionResultScroll.hidden = YES;
         self.detail.previewScroll.hidden = NO;
+        self.detail.completionResultPreviewScroll.hidden = !self.detail.resultVisible;
         [self.detail setNeedsLayout:YES];
         [self.detail layoutSubtreeIfNeeded];
-        SizeTextViewToScrollView(preview, self.detail.previewScroll);
-        [preview setSelectedRange:NSMakeRange(0, 0)];
-        [preview scrollToBeginningOfDocument:nil];
-        [self.view.window makeFirstResponder:preview];
+        SizeTextViewToScrollView(documentPreview, self.detail.previewScroll);
+        SizeTextViewToScrollView(resultPreview, self.detail.completionResultPreviewScroll);
+
+        [documentPreview setSelectedRange:NSMakeRange(0, 0)];
+        [documentPreview scrollToBeginningOfDocument:nil];
+        [resultPreview setSelectedRange:NSMakeRange(0, 0)];
+        [resultPreview scrollToBeginningOfDocument:nil];
+        [self.view.window makeFirstResponder:documentPreview];
     } @catch (NSException *exception) {
         [self releasePreview];
         NSError *error = [NSError errorWithDomain:TodoErrorDomain
@@ -1113,8 +1143,68 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         [self fallBackToEditorMode];
     }
 }
-- (NSTextView *)ensurePreview { if(self.detail.preview)return self.detail.preview; NSTextView *text=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,MAX(1,self.detail.bounds.size.width),MAX(1,self.detail.bounds.size.height))]; text.editable=NO;text.selectable=YES;text.richText=YES;text.drawsBackground=YES;text.backgroundColor=NSColor.textBackgroundColor;text.textContainerInset=NSMakeSize(48,36);text.verticallyResizable=YES;text.horizontallyResizable=NO;text.autoresizingMask=NSViewWidthSizable;text.textContainer.widthTracksTextView=YES;text.linkTextAttributes=@{NSForegroundColorAttributeName:NSColor.linkColor,NSUnderlineStyleAttributeName:@(NSUnderlineStyleSingle)}; NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSZeroRect];scroll.documentView=text;scroll.hasVerticalScroller=YES;scroll.hasHorizontalScroller=NO;scroll.autohidesScrollers=YES;scroll.drawsBackground=YES;scroll.borderType=NSNoBorder;scroll.backgroundColor=NSColor.textBackgroundColor;[self.detail addSubview:scroll positioned:NSWindowAbove relativeTo:self.detail.editorScroll];self.detail.preview=text;self.detail.previewScroll=scroll;[self.detail setNeedsLayout:YES];[self.detail layoutSubtreeIfNeeded];SizeTextViewToScrollView(text,scroll);return text; }
-- (void)releasePreview { [self.detail.previewScroll removeFromSuperview];self.detail.previewScroll=nil;self.detail.preview=nil;self.detail.editorScroll.hidden=NO; }
+- (NSTextView *)newMarkdownPreviewWithInsets:(NSSize)insets {
+    NSTextView *text = [[NSTextView alloc] initWithFrame:NSZeroRect];
+    text.editable = NO;
+    text.selectable = YES;
+    text.richText = YES;
+    text.drawsBackground = YES;
+    text.backgroundColor = NSColor.textBackgroundColor;
+    text.textContainerInset = insets;
+    text.verticallyResizable = YES;
+    text.horizontallyResizable = NO;
+    text.autoresizingMask = NSViewWidthSizable;
+    text.textContainer.widthTracksTextView = YES;
+    text.linkTextAttributes = @{
+        NSForegroundColorAttributeName: NSColor.linkColor,
+        NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle),
+    };
+    return text;
+}
+- (NSScrollView *)newMarkdownPreviewScrollWithTextView:(NSTextView *)text relativeTo:(NSView *)relativeView {
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    scroll.documentView = text;
+    scroll.hasVerticalScroller = YES;
+    scroll.hasHorizontalScroller = NO;
+    scroll.autohidesScrollers = YES;
+    scroll.drawsBackground = YES;
+    scroll.borderType = NSNoBorder;
+    scroll.backgroundColor = NSColor.textBackgroundColor;
+    [self.detail addSubview:scroll positioned:NSWindowAbove relativeTo:relativeView];
+    return scroll;
+}
+- (NSTextView *)ensurePreview {
+    if (self.detail.preview) return self.detail.preview;
+    NSTextView *text = [self newMarkdownPreviewWithInsets:NSMakeSize(48, 36)];
+    NSScrollView *scroll = [self newMarkdownPreviewScrollWithTextView:text relativeTo:self.detail.editorScroll];
+    self.detail.preview = text;
+    self.detail.previewScroll = scroll;
+    [self.detail setNeedsLayout:YES];
+    [self.detail layoutSubtreeIfNeeded];
+    SizeTextViewToScrollView(text, scroll);
+    return text;
+}
+- (NSTextView *)ensureCompletionResultPreview {
+    if (self.detail.completionResultPreview) return self.detail.completionResultPreview;
+    NSTextView *text = [self newMarkdownPreviewWithInsets:NSMakeSize(16, 12)];
+    NSScrollView *scroll = [self newMarkdownPreviewScrollWithTextView:text relativeTo:self.detail.completionResultScroll];
+    self.detail.completionResultPreview = text;
+    self.detail.completionResultPreviewScroll = scroll;
+    [self.detail setNeedsLayout:YES];
+    [self.detail layoutSubtreeIfNeeded];
+    SizeTextViewToScrollView(text, scroll);
+    return text;
+}
+- (void)releasePreview {
+    [self.detail.previewScroll removeFromSuperview];
+    [self.detail.completionResultPreviewScroll removeFromSuperview];
+    self.detail.previewScroll = nil;
+    self.detail.preview = nil;
+    self.detail.completionResultPreviewScroll = nil;
+    self.detail.completionResultPreview = nil;
+    self.detail.editorScroll.hidden = NO;
+    self.detail.completionResultScroll.hidden = !self.detail.resultVisible;
+}
 - (NSAttributedString *)attributedMarkdown:(NSArray<NSDictionary *> *)runs { NSMutableAttributedString *output=[[NSMutableAttributedString alloc] init]; for(NSDictionary *run in runs){NSString *style=run[@"style"]?:@"body";NSFont *font=[NSFont systemFontOfSize:15];NSColor *color=NSColor.labelColor;NSMutableParagraphStyle *p=[[NSMutableParagraphStyle alloc] init];p.lineSpacing=3;if([style isEqual:@"heading1"])font=[NSFont systemFontOfSize:30 weight:NSFontWeightBold];else if([style isEqual:@"heading2"])font=[NSFont systemFontOfSize:24 weight:NSFontWeightBold];else if([style isEqual:@"heading3"])font=[NSFont systemFontOfSize:20 weight:NSFontWeightSemibold];else if([style hasPrefix:@"heading"])font=[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold];else if([style isEqual:@"quote"]){color=NSColor.secondaryLabelColor;p.headIndent=p.firstLineHeadIndent=18;}else if([style isEqual:@"code"]){font=[NSFont monospacedSystemFontOfSize:13.5 weight:NSFontWeightRegular];p.headIndent=p.firstLineHeadIndent=12;}else if([style isEqual:@"table"]){font=[NSFont monospacedSystemFontOfSize:13 weight:NSFontWeightRegular];}else if([style isEqual:@"separator"])color=NSColor.separatorColor; NSFontTraitMask traits=0;if([run[@"bold"] boolValue])traits|=NSBoldFontMask;if([run[@"italic"] boolValue])traits|=NSItalicFontMask;if(traits)font=[NSFontManager.sharedFontManager convertFont:font toHaveTrait:traits];NSMutableDictionary *a=[@{NSFontAttributeName:font,NSForegroundColorAttributeName:color,NSParagraphStyleAttributeName:p} mutableCopy];if([run[@"strikethrough"] boolValue])a[NSStrikethroughStyleAttributeName]=@(NSUnderlineStyleSingle);id linkValue=run[@"link"];NSString *link=[linkValue isKindOfClass:NSString.class]?linkValue:nil;if(link.length){NSURL *url=[NSURL URLWithString:link];if(url){a[NSLinkAttributeName]=url;a[NSForegroundColorAttributeName]=NSColor.linkColor;a[NSUnderlineStyleAttributeName]=@(NSUnderlineStyleSingle);}}[output appendAttributedString:[[NSAttributedString alloc] initWithString:run[@"text"]?:@"" attributes:a]];}return output; }
 - (void)showError:(NSError *)error { if(!error)return;if(!self.view.window){NSLog(@"Todo error: %@",error.localizedDescription);return;}NSAlert *alert=[NSAlert alertWithError:error];[alert beginSheetModalForWindow:self.view.window completionHandler:nil]; }
 - (void)runBenchmarkMode {
@@ -1158,8 +1248,18 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
             NSRect editorUsed = [self.detail.editor.layoutManager usedRectForTextContainer:self.detail.editor.textContainer];
             NSRect resultUsed = [self.detail.completionResultEditor.layoutManager usedRectForTextContainer:self.detail.completionResultEditor.textContainer];
             NSRect previewUsed = self.detail.preview ? [self.detail.preview.layoutManager usedRectForTextContainer:self.detail.preview.textContainer] : NSZeroRect;
+            NSRect resultPreviewUsed = self.detail.completionResultPreview ? [self.detail.completionResultPreview.layoutManager usedRectForTextContainer:self.detail.completionResultPreview.textContainer] : NSZeroRect;
+            __block NSUInteger resultPreviewLinks = 0;
+            if (self.detail.completionResultPreview.textStorage.length > 0) {
+                [self.detail.completionResultPreview.textStorage enumerateAttribute:NSLinkAttributeName
+                                                                            inRange:NSMakeRange(0, self.detail.completionResultPreview.textStorage.length)
+                                                                            options:0
+                                                                         usingBlock:^(id value, NSRange range, BOOL *stop) {
+                    if (value) resultPreviewLinks++;
+                }];
+            }
             fprintf(stderr,
-                    "mode=%s viewMode=%s selectedID=%s language=%s heading=%s createTask=%s todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu\n",
+                    "mode=%s viewMode=%s selectedID=%s language=%s heading=%s createTask=%s todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d\n",
                     mode.UTF8String,
                     self.viewMode == 1 ? "preview" : "edit",
                     self.selectedID.stringValue.UTF8String ?: "none",
@@ -1180,7 +1280,14 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
                     (unsigned long)self.detail.completionResultEditor.string.length,
                     NSWidth(self.detail.preview.frame), NSHeight(self.detail.preview.frame),
                     self.detail.preview.textContainer.containerSize.width, NSWidth(previewUsed),
-                    (unsigned long)self.detail.preview.string.length);
+                    (unsigned long)self.detail.preview.string.length,
+                    NSWidth(self.detail.completionResultPreview.frame), NSHeight(self.detail.completionResultPreview.frame),
+                    self.detail.completionResultPreview.textContainer.containerSize.width,
+                    NSWidth(resultPreviewUsed), NSHeight(resultPreviewUsed),
+                    (unsigned long)self.detail.completionResultPreview.string.length,
+                    (unsigned long)resultPreviewLinks,
+                    self.detail.completionResultScroll.hidden,
+                    self.detail.completionResultPreviewScroll.hidden);
         });
     }
 }
