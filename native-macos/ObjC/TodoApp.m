@@ -574,7 +574,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     return self;
 }
 - (BOOL)isFlipped { return YES; }
-- (CGFloat)dividerThickness { return 7.0; }
+- (CGFloat)dividerThickness { return 1.0; }
 - (CGFloat)availableContentHeight {
     return MAX(0.0, NSHeight(self.bounds) - 55.0 - 53.0);
 }
@@ -647,14 +647,19 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     [self setNeedsLayout:YES];
     [self setNeedsDisplay:YES];
 }
+- (NSRect)dividerHitRect {
+    NSRect divider = [self dividerRect];
+    if (NSIsEmptyRect(divider)) return NSZeroRect;
+    return NSInsetRect(divider, 0, -3.0);
+}
 - (void)resetCursorRects {
     [super resetCursorRects];
-    NSRect divider = [self dividerRect];
-    if (!NSIsEmptyRect(divider)) [self addCursorRect:divider cursor:NSCursor.resizeUpDownCursor];
+    NSRect hitRect = [self dividerHitRect];
+    if (!NSIsEmptyRect(hitRect)) [self addCursorRect:hitRect cursor:NSCursor.resizeUpDownCursor];
 }
 - (void)mouseDown:(NSEvent *)event {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    if (!self.resultExpanded || !NSPointInRect(point, [self dividerRect])) {
+    if (!self.resultExpanded || !NSPointInRect(point, [self dividerHitRect])) {
         [super mouseDown:event];
         return;
     }
@@ -684,15 +689,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         NSRectFill(NSMakeRect(0, NSMinY(self.completionResultDisclosure.frame), NSWidth(self.bounds), 1));
     }
     if (self.resultExpanded) {
-        NSRect divider = [self dividerRect];
-        NSRectFill(divider);
-        NSColor *gripColor = [NSColor.tertiaryLabelColor colorWithAlphaComponent:0.65];
-        [gripColor setFill];
-        CGFloat centerX = NSMidX(divider);
-        CGFloat centerY = NSMidY(divider);
-        for (NSInteger offset = -1; offset <= 1; offset++) {
-            NSRectFill(NSMakeRect(centerX - 12, centerY + offset * 2 - 0.5, 24, 1));
-        }
+        NSRectFill([self dividerRect]);
     }
     NSRectFill(NSMakeRect(0, footerTop, NSWidth(self.bounds), 1));
 }
