@@ -343,6 +343,7 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
 
 @interface TaskCellView : NSTableCellView
 @property CheckControl *check;
+@property NSTextField *idLabel;
 @property NSTextField *titleLabel;
 @property NSTextField *subtitleLabel;
 @property NSTextField *priorityLabel;
@@ -352,6 +353,10 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
 - (instancetype)initWithFrame:(NSRect)frame {
     if ((self = [super initWithFrame:frame])) {
         _check = [[CheckControl alloc] initWithFrame:NSZeroRect];
+        _idLabel = [NSTextField labelWithString:@""];
+        _idLabel.font = [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium];
+        _idLabel.textColor = NSColor.tertiaryLabelColor;
+        _idLabel.lineBreakMode = NSLineBreakByClipping;
         _titleLabel = [NSTextField labelWithString:@""];
         _titleLabel.font = [NSFont systemFontOfSize:13.5 weight:NSFontWeightSemibold];
         _titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -362,7 +367,7 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
         _priorityLabel = [NSTextField labelWithString:@""];
         _priorityLabel.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold];
         _priorityLabel.alignment = NSTextAlignmentCenter;
-        [self addSubview:_check]; [self addSubview:_titleLabel]; [self addSubview:_subtitleLabel]; [self addSubview:_priorityLabel];
+        [self addSubview:_check]; [self addSubview:_idLabel]; [self addSubview:_titleLabel]; [self addSubview:_subtitleLabel]; [self addSubview:_priorityLabel];
     }
     return self;
 }
@@ -370,13 +375,16 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
     [super layout];
     CGFloat h = NSHeight(self.bounds);
     self.check.frame = NSMakeRect(10, (h - 20) / 2, 20, 20);
-    CGFloat x = 38, badgeWidth = 28, rightInset = 10;
+    CGFloat x = 38, idWidth = 44, badgeWidth = 28, rightInset = 10;
     CGFloat w = MAX(0, NSWidth(self.bounds) - x - rightInset);
+    self.idLabel.frame = NSMakeRect(x, h / 2 + 4, idWidth, 17);
     self.priorityLabel.frame = NSMakeRect(NSWidth(self.bounds) - badgeWidth - rightInset, h / 2 + 3, badgeWidth, 19);
-    self.titleLabel.frame = NSMakeRect(x, h / 2 + 3, MAX(0, w - badgeWidth - 6), 19);
+    self.titleLabel.frame = NSMakeRect(x + idWidth, h / 2 + 3, MAX(0, w - idWidth - badgeWidth - 6), 19);
     self.subtitleLabel.frame = NSMakeRect(x, h / 2 - 17, w, 17);
 }
 - (void)configure:(NSDictionary *)summary handler:(void (^)(BOOL))handler english:(BOOL)english {
+    NSNumber *todoID = [summary[@"id"] isKindOfClass:NSNumber.class] ? summary[@"id"] : nil;
+    self.idLabel.stringValue = todoID ? [NSString stringWithFormat:@"#%@", todoID] : @"#?";
     self.titleLabel.stringValue = summary[@"title"] ?: @"";
     self.subtitleLabel.stringValue = summary[@"subtitle"] ?: @"";
     NSString *priority = [summary[@"priority"] isKindOfClass:NSString.class] ? summary[@"priority"] : @"low";
@@ -393,9 +401,11 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
     BOOL completed = [summary[@"completed"] boolValue];
     self.check.checked = completed;
     self.check.changeHandler = handler;
+    self.idLabel.textColor = NSColor.tertiaryLabelColor;
     self.titleLabel.textColor = completed ? NSColor.tertiaryLabelColor : NSColor.labelColor;
     self.subtitleLabel.textColor = completed ? NSColor.tertiaryLabelColor : NSColor.secondaryLabelColor;
     if (completed) self.priorityLabel.textColor = NSColor.tertiaryLabelColor;
+    self.accessibilityLabel = [NSString stringWithFormat:@"%@ %@", self.idLabel.stringValue, self.titleLabel.stringValue];
 }
 @end
 
@@ -1711,12 +1721,14 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
             NSNumber *firstFilteredID = self.filtered.count > 0 ? self.filtered[0][@"id"] : nil;
             NSNumber *secondFilteredID = self.filtered.count > 1 ? self.filtered[1][@"id"] : nil;
             NSNumber *thirdFilteredID = self.filtered.count > 2 ? self.filtered[2][@"id"] : nil;
+            TaskCellView *firstCell = self.filtered.count > 0 ? (TaskCellView *)[self.sidebar.tableView viewAtColumn:0 row:0 makeIfNecessary:YES] : nil;
             fprintf(stderr,
-                    "mode=%s viewMode=%s sortMode=%s firstFilteredID=%s secondFilteredID=%s thirdFilteredID=%s selectedID=%s selectedPriority=%s priorityControl=%ld resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
+                    "mode=%s viewMode=%s sortMode=%s firstFilteredID=%s firstCellID=%s secondFilteredID=%s thirdFilteredID=%s selectedID=%s selectedPriority=%s priorityControl=%ld resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
                     mode.UTF8String,
                     self.viewMode == TodoViewModeEdit ? "edit" : (self.viewMode == TodoViewModeSplit ? "split" : "preview"),
                     self.sortMode == TodoSortModeNewestFirst ? "newest" : (self.sortMode == TodoSortModePriorityFirst ? "priority" : "original"),
                     firstFilteredID.stringValue.UTF8String ?: "none",
+                    firstCell.idLabel.stringValue.UTF8String ?: "none",
                     secondFilteredID.stringValue.UTF8String ?: "none",
                     thirdFilteredID.stringValue.UTF8String ?: "none",
                     self.selectedID.stringValue.UTF8String ?: "none",

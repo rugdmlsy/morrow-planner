@@ -7,8 +7,9 @@ Usage:
   todoctl [--data-file PATH] <command> [arguments]
 
 Commands:
-  list [all|active|completed] [--json]  List tasks
-  add <title>                            Add a task
+  list [all|active|completed] [--json]  List tasks and their IDs
+  show <id> [--json]                    Show one task by ID
+  add <title>                            Add a task and print its ID
   done <id>                              Mark a task completed
   undo <id>                              Restore a task
   edit <id> <title>                      Rename a task
@@ -57,6 +58,7 @@ fn run() -> Result<(), String> {
 
     match command {
         "list" => list(&store, &args[1..]),
+        "show" | "get" => show(&store, &args),
         "add" => {
             let title = joined_argument(&args, 1, "add requires a title")?;
             let todo = store.add(title).map_err(|error| error.to_string())?;
@@ -186,6 +188,48 @@ fn list(store: &TodoStore, args: &[String]) -> Result<(), String> {
             );
         }
     }
+    Ok(())
+}
+
+fn show(store: &TodoStore, args: &[String]) -> Result<(), String> {
+    let id = id_argument(args, 1)?;
+    let mut json = false;
+    for arg in &args[2..] {
+        match arg.as_str() {
+            "--json" => json = true,
+            unknown => return Err(format!("unknown show option '{unknown}'")),
+        }
+    }
+
+    let todo = store
+        .list()
+        .iter()
+        .find(|todo| todo.id == id)
+        .ok_or_else(|| format!("task {id} was not found"))?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(todo).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
+
+    println!("ID: {}", todo.id);
+    println!("Status: {}", if todo.completed { "done" } else { "todo" });
+    println!("Priority: {}", priority_name(todo.priority));
+    println!("CreatedAtMs: {}", todo.created_at_ms);
+    println!("Title: {}", display_title(todo));
+    println!(
+        "Content:
+{}",
+        todo.content
+    );
+    println!(
+        "CompletionResult:
+{}",
+        todo.completion_result
+    );
     Ok(())
 }
 
