@@ -7,20 +7,26 @@ Usage:
   todoctl [--data-file PATH] <command> [arguments]
 
 Commands:
-  list [all|active|completed] [--json]  List tasks and their IDs
+  list [all|active|completed|archived] [--json]
+                                         List tasks and their IDs
   show <id> [--json]                    Show one task by ID
   add <title>                            Add a task and print its ID
   done <id>                              Mark a task completed
   undo <id>                              Restore a task
+  archive <id>                           Archive a task
+  unarchive <id>                         Restore an archived task
   edit <id> <title>                      Rename a task
   content <id> <text>                    Update task content
   result <id> <text>                     Set the optional completion result
   clear-result <id>                       Clear the completion result
   priority <id> <low|medium|high>         Set task priority
   delete <id>                            Delete a task
-  complete-all                           Complete every task
-  restore-all                            Restore every task
-  clear-completed                        Delete completed tasks
+  complete-all                           Complete every unarchived task
+  restore-all                            Restore every unarchived task
+  archive-completed                      Archive completed tasks
+  restore-archived                       Restore all archived tasks
+  clear-completed                        Delete completed unarchived tasks
+  clear-archived                         Delete all archived tasks
   path                                   Print the data file path
   help                                   Show this help
 
@@ -67,6 +73,8 @@ fn run() -> Result<(), String> {
         }
         "done" => update_completed(&mut store, &args, true),
         "undo" => update_completed(&mut store, &args, false),
+        "archive" => update_archived(&mut store, &args, true),
+        "unarchive" => update_archived(&mut store, &args, false),
         "edit" => {
             let id = id_argument(&args, 1)?;
             let title = joined_argument(&args, 2, "edit requires a title")?;
@@ -125,8 +133,27 @@ fn run() -> Result<(), String> {
             println!("{changed}");
             Ok(())
         }
+        "archive-completed" => {
+            let changed = store
+                .archive_completed()
+                .map_err(|error| error.to_string())?;
+            println!("{changed}");
+            Ok(())
+        }
+        "restore-archived" => {
+            let changed = store
+                .restore_archived()
+                .map_err(|error| error.to_string())?;
+            println!("{changed}");
+            Ok(())
+        }
         "clear-completed" => {
             let removed = store.clear_completed().map_err(|error| error.to_string())?;
+            println!("{removed}");
+            Ok(())
+        }
+        "clear-archived" => {
+            let removed = store.clear_archived().map_err(|error| error.to_string())?;
             println!("{removed}");
             Ok(())
         }
@@ -156,7 +183,7 @@ fn list(store: &TodoStore, args: &[String]) -> Result<(), String> {
     let mut json = false;
     for arg in args {
         match arg.as_str() {
-            "all" | "active" | "completed" => filter = arg,
+            "all" | "active" | "completed" | "archived" => filter = arg,
             "--json" => json = true,
             unknown => return Err(format!("unknown list option '{unknown}'")),
         }
@@ -166,8 +193,9 @@ fn list(store: &TodoStore, args: &[String]) -> Result<(), String> {
         .list()
         .iter()
         .filter(|todo| match filter {
-            "active" => !todo.completed,
-            "completed" => todo.completed,
+            "active" => !todo.archived && !todo.completed,
+            "completed" => !todo.archived && todo.completed,
+            "archived" => todo.archived,
             _ => true,
         })
         .collect::<Vec<_>>();
@@ -182,7 +210,13 @@ fn list(store: &TodoStore, args: &[String]) -> Result<(), String> {
             println!(
                 "{}\t{}\t{}\t{}",
                 todo.id,
-                if todo.completed { "done" } else { "todo" },
+                if todo.archived {
+                    "archived"
+                } else if todo.completed {
+                    "done"
+                } else {
+                    "todo"
+                },
                 priority_name(todo.priority),
                 display_title(todo)
             );
@@ -217,6 +251,7 @@ fn show(store: &TodoStore, args: &[String]) -> Result<(), String> {
 
     println!("ID: {}", todo.id);
     println!("Status: {}", if todo.completed { "done" } else { "todo" });
+    println!("Archived: {}", if todo.archived { "yes" } else { "no" });
     println!("Priority: {}", priority_name(todo.priority));
     println!("CreatedAtMs: {}", todo.created_at_ms);
     println!("Title: {}", display_title(todo));
@@ -260,6 +295,17 @@ fn update_completed(store: &mut TodoStore, args: &[String], completed: bool) -> 
     let id = id_argument(args, 1)?;
     store
         .update(id, None, None, None, None, Some(completed))
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn update_archived(store: &mut TodoStore, args: &[String], archived: bool) -> Result<(), String> {
+    let id = id_argument(args, 1)?;
+    if !store.list().iter().any(|todo| todo.id == id) {
+        return Err(format!("task {id} was not found"));
+    }
+    store
+        .set_archived_for_ids(&[id], archived)
         .map_err(|error| error.to_string())?;
     Ok(())
 }

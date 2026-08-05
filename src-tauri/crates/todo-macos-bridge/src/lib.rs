@@ -30,7 +30,14 @@ enum Request {
     Delete {
         id: u64,
     },
+    SetArchived {
+        ids: Vec<u64>,
+        archived: bool,
+    },
+    ArchiveCompleted,
+    RestoreArchived,
     ClearCompleted,
+    ClearArchived,
     SetAllCompleted {
         completed: bool,
     },
@@ -48,6 +55,7 @@ struct TodoSummary {
     subtitle: String,
     completed: bool,
     priority: TodoPriority,
+    archived: bool,
     created_at_ms: i64,
 }
 
@@ -204,9 +212,35 @@ fn handle_request(request: &str) -> Result<Value, String> {
             store.delete(id).map_err(|error| error.to_string())?;
             Ok(Value::Bool(true))
         }
+        Request::SetArchived { ids, archived } => {
+            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let count = store
+                .set_archived_for_ids(&ids, archived)
+                .map_err(|error| error.to_string())?;
+            Ok(json!(count))
+        }
+        Request::ArchiveCompleted => {
+            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let count = store
+                .archive_completed()
+                .map_err(|error| error.to_string())?;
+            Ok(json!(count))
+        }
+        Request::RestoreArchived => {
+            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let count = store
+                .restore_archived()
+                .map_err(|error| error.to_string())?;
+            Ok(json!(count))
+        }
         Request::ClearCompleted => {
             let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
             let count = store.clear_completed().map_err(|error| error.to_string())?;
+            Ok(json!(count))
+        }
+        Request::ClearArchived => {
+            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let count = store.clear_archived().map_err(|error| error.to_string())?;
             Ok(json!(count))
         }
         Request::SetAllCompleted { completed } => {
@@ -247,6 +281,7 @@ fn todo_summary(todo: &Todo) -> TodoSummary {
         },
         completed: todo.completed,
         priority: todo.priority,
+        archived: todo.archived,
         created_at_ms: todo.created_at_ms,
     }
 }
@@ -577,6 +612,7 @@ mod tests {
             content: "# Main title\n\nMore **detail** here".to_owned(),
             completion_result: "Verified output".to_owned(),
             priority: TodoPriority::High,
+            archived: true,
             completed: false,
             created_at_ms: 1_234,
         });
@@ -584,6 +620,7 @@ mod tests {
         assert_eq!(summary.title, "Main title");
         assert_eq!(summary.subtitle, "More detail here");
         assert_eq!(summary.priority, TodoPriority::High);
+        assert!(summary.archived);
         assert_eq!(summary.created_at_ms, 1_234);
     }
 
@@ -619,6 +656,21 @@ mod tests {
                 assert_eq!(priority, Some(TodoPriority::Medium));
             }
             _ => panic!("expected update request"),
+        }
+    }
+
+    #[test]
+    fn accepts_bulk_archive_requests() {
+        let request: Request =
+            serde_json::from_str(r#"{"command":"setArchived","ids":[3,7],"archived":true}"#)
+                .expect("archive request should parse");
+
+        match request {
+            Request::SetArchived { ids, archived } => {
+                assert_eq!(ids, vec![3, 7]);
+                assert!(archived);
+            }
+            _ => panic!("expected archive request"),
         }
     }
 

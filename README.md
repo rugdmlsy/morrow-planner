@@ -9,7 +9,7 @@ A local-first macOS Todo application with a native desktop interface and a nativ
 
 The desktop application contains no WebView, JavaScript runtime, HTML renderer, SwiftUI frontend, or Tauri runtime.
 
-Each task is created through the New Task button and immediately opens as one editable Markdown document; there is no separate quick-add path. The first non-empty Markdown line supplies the title shown in the sidebar. Each task also has a multiline Markdown completion-result editor for recording delivered output, links, or verification notes independently from the task document. The completion-result section is collapsible: empty results start collapsed at the bottom of the detail view, while non-empty results start expanded; a per-task manual choice is retained for the current app session. When expanded, the task and result editors both use AppKit TextKit views, and their vertical proportions can be changed by dragging the divider between them. The detail workspace has three global modes: Edit maximizes the editable source, Split places the editor on the left and a live Markdown preview on the right, and Preview maximizes the rendered result. The selected mode applies to both the task document and completion result, carries across task selection, and is stored locally; Split is the default for a new installation. The interface can switch between Chinese and English, and the preference is stored locally. Every new task receives a stable numeric ID, an immutable `createdAtMs` timestamp when it is first defined, and a three-level priority that defaults to Low. The sidebar displays each ID as `#<id>` so the same task can be targeted from the command line. Editing or completing the task does not change its creation timestamp. The sidebar can combine completion-state filtering with creation-time categories for all tasks, the rolling last 24 hours, the rolling last 7 days, or a custom inclusive date range. It can retain the stored order, sort matching tasks by immutable creation time with the newest tasks first, or sort High before Medium before Low; equal priorities are ordered newest first. The selected order is stored locally. Tasks written by `todoctl` or another process can be loaded without restarting the app using the sidebar refresh button or Command-R; the current selection is retained and its document is reloaded from disk. Full task content is loaded only for the selected task. Whenever a preview pane is visible, Markdown is parsed by `pulldown-cmark`, Rust returns structured style runs rather than HTML, and AppKit converts those runs into an attributed string for a read-only `NSTextView`. In Split mode, preview rendering is debounced and refreshed while the user types.
+Each task is created through the New Task button and immediately opens as one editable Markdown document; there is no separate quick-add path. The first non-empty Markdown line supplies the title shown in the sidebar. Each task also has a multiline Markdown completion-result editor for recording delivered output, links, or verification notes independently from the task document. The completion-result section is collapsible: empty results start collapsed at the bottom of the detail view, while non-empty results start expanded; a per-task manual choice is retained for the current app session. When expanded, the task and result editors both use AppKit TextKit views, and their vertical proportions can be changed by dragging the divider between them. The detail workspace has three global modes: Edit maximizes the editable source, Split places the editor on the left and a live Markdown preview on the right, and Preview maximizes the rendered result. The selected mode applies to both the task document and completion result, carries across task selection, and is stored locally; Split is the default for a new installation. The interface can switch between Chinese and English, and the preference is stored locally. Every new task receives a stable numeric ID, an immutable `createdAtMs` timestamp when it is first defined, and a three-level priority that defaults to Low. The sidebar displays each ID as `#<id>` on the secondary line so the title keeps its full width and the same task can be targeted from the command line. Editing or completing the task does not change its creation timestamp. The sidebar can combine completion-state filtering with creation-time categories for all tasks, the rolling last 24 hours, the rolling last 7 days, or a custom inclusive date range. It can retain the stored order, sort matching tasks by immutable creation time with the newest tasks first, or sort High before Medium before Low; equal priorities are ordered newest first. The selected order is stored locally. A neutral Manage menu in the sidebar contains archive and destructive bulk operations: archive the current task, archive or restore the filtered list, archive completed tasks, restore all archived tasks, delete completed tasks, and delete archived tasks. Destructive bulk deletion requires confirmation, archived tasks are hidden from the normal list, and the same menu switches to the archive view. Tasks written by `todoctl` or another process can be loaded without restarting the app using the sidebar refresh button or Command-R; the current selection is retained and its document is reloaded from disk. Full task content is loaded only for the selected task. Whenever a preview pane is visible, Markdown is parsed by `pulldown-cmark`, Rust returns structured style runs rather than HTML, and AppKit converts those runs into an attributed string for a read-only `NSTextView`. In Split mode, preview rendering is debounced and refreshed while the user types.
 
 Data is stored at:
 
@@ -17,7 +17,7 @@ Data is stored at:
 ~/Library/Application Support/com.xycdev.todo/todos.json
 ```
 
-Set `TODO_DATA_FILE` to use another file. Legacy records without `createdAtMs` are migrated once using the existing JSON file's modification time as their best available approximate creation time. Legacy records without `priority` load as Low.
+Set `TODO_DATA_FILE` to use another file. Legacy records without `createdAtMs` are migrated once using the existing JSON file's modification time as their best available approximate creation time. Legacy records without `priority` load as Low, and records without `archived` load as unarchived.
 
 ## Build the macOS app
 
@@ -60,10 +60,16 @@ todoctl edit "$ID" "Ship the MVP"
 todoctl content "$ID" "# Ship the MVP\n\nVerify the native package."
 todoctl result "$ID" "Released v1.0 and verified the checksum"
 todoctl priority "$ID" high
+todoctl archive "$ID"
+todoctl list archived
+todoctl unarchive "$ID"
 todoctl clear-result "$ID"
 todoctl delete "$ID"
 todoctl list completed --json
+todoctl archive-completed
+todoctl restore-archived
 todoctl clear-completed
+todoctl clear-archived
 todoctl path
 ```
 

@@ -375,12 +375,12 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
     [super layout];
     CGFloat h = NSHeight(self.bounds);
     self.check.frame = NSMakeRect(10, (h - 20) / 2, 20, 20);
-    CGFloat x = 38, idWidth = 44, badgeWidth = 28, rightInset = 10;
+    CGFloat x = 38, idWidth = 40, badgeWidth = 28, rightInset = 10;
     CGFloat w = MAX(0, NSWidth(self.bounds) - x - rightInset);
-    self.idLabel.frame = NSMakeRect(x, h / 2 + 4, idWidth, 17);
     self.priorityLabel.frame = NSMakeRect(NSWidth(self.bounds) - badgeWidth - rightInset, h / 2 + 3, badgeWidth, 19);
-    self.titleLabel.frame = NSMakeRect(x + idWidth, h / 2 + 3, MAX(0, w - idWidth - badgeWidth - 6), 19);
-    self.subtitleLabel.frame = NSMakeRect(x, h / 2 - 17, w, 17);
+    self.titleLabel.frame = NSMakeRect(x, h / 2 + 3, MAX(0, w - badgeWidth - 6), 19);
+    self.idLabel.frame = NSMakeRect(x, h / 2 - 17, idWidth, 17);
+    self.subtitleLabel.frame = NSMakeRect(x + idWidth, h / 2 - 17, MAX(0, w - idWidth), 17);
 }
 - (void)configure:(NSDictionary *)summary handler:(void (^)(BOOL))handler english:(BOOL)english {
     NSNumber *todoID = [summary[@"id"] isKindOfClass:NSNumber.class] ? summary[@"id"] : nil;
@@ -479,7 +479,7 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
 @property NSScrollView *scrollView;
 @property NSTableView *tableView;
 @property NSTextField *countLabel;
-@property LiteButton *clearButton;
+@property LiteButton *managementButton;
 @end
 @implementation SidebarView
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -503,8 +503,8 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
         _tableView = [[NSTableView alloc] initWithFrame:NSZeroRect]; NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"task"]; [_tableView addTableColumn:column]; _tableView.headerView = nil; _tableView.rowHeight = 62; _tableView.intercellSpacing = NSMakeSize(0, 1); _tableView.backgroundColor = NSColor.clearColor;
         _scrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect]; _scrollView.documentView = _tableView; _scrollView.hasVerticalScroller = YES; _scrollView.autohidesScrollers = YES; _scrollView.drawsBackground = NO;
         _countLabel = [NSTextField labelWithString:@""]; _countLabel.font = [NSFont systemFontOfSize:11]; _countLabel.textColor = NSColor.secondaryLabelColor;
-        _clearButton = [[LiteButton alloc] initWithTitle:@"清除已完成" style:LiteButtonStyleDanger];
-        for (NSView *v in @[_dateLabel,_headingLabel,_createTaskButton,_languageControl,_refreshButton,_toggleAllButton,_filterControl,_datePresetControl,_sortControl,_dateRangeLabel,_scrollView,_countLabel,_clearButton]) [self addSubview:v];
+        _managementButton = [[LiteButton alloc] initWithTitle:@"管理…" style:LiteButtonStylePlain];
+        for (NSView *v in @[_dateLabel,_headingLabel,_createTaskButton,_languageControl,_refreshButton,_toggleAllButton,_filterControl,_datePresetControl,_sortControl,_dateRangeLabel,_scrollView,_countLabel,_managementButton]) [self addSubview:v];
     }
     return self;
 }
@@ -528,8 +528,9 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
     NSSize sortSize = self.sortControl.intrinsicContentSize;
     self.sortControl.frame = NSMakeRect((w - sortSize.width) / 2, 158, sortSize.width, 28);
     self.dateRangeLabel.frame = NSMakeRect(12, 190, w - 24, 17);
-    self.countLabel.frame = NSMakeRect(12, h - 31, w - 130, 18);
-    NSSize clearSize = self.clearButton.intrinsicContentSize; self.clearButton.frame = NSMakeRect(w - clearSize.width - 8, h - 37, clearSize.width, 28);
+    NSSize managementSize = self.managementButton.intrinsicContentSize;
+    self.countLabel.frame = NSMakeRect(12, h - 31, MAX(40, w - managementSize.width - 30), 18);
+    self.managementButton.frame = NSMakeRect(w - managementSize.width - 8, h - 37, managementSize.width, 28);
     self.scrollView.frame = NSMakeRect(0, 216, w, MAX(0, h - 216 - 42));
 }
 - (void)drawRect:(NSRect)dirtyRect {
@@ -853,6 +854,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @property TodoViewMode viewMode;
 @property TodoSortMode sortMode;
 @property NSInteger filterIndex;
+@property BOOL archiveView;
 @property TodoDateFilterMode dateFilterMode;
 @property(nullable) NSDate *createdFromDate;
 @property(nullable) NSDate *createdToExclusiveDate;
@@ -866,6 +868,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @property(nullable) NSTimer *saveTimer;
 @property(nullable) NSTimer *previewTimer;
 @property BOOL benchmarkRan;
+- (void)showManagementMenu;
 @end
 
 @implementation TodoController
@@ -893,7 +896,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.sidebar.languageControl.changeHandler = ^(NSInteger index) { [weakSelf changeLanguage:(TodoLanguage)index]; };
     self.sidebar.refreshButton.handler = ^{ [weakSelf refreshFromDisk:nil]; };
     self.sidebar.toggleAllButton.handler = ^{ [weakSelf toggleAll]; };
-    self.sidebar.clearButton.handler = ^{ [weakSelf clearCompleted]; };
+    self.sidebar.managementButton.handler = ^{ [weakSelf showManagementMenu]; };
     self.sidebar.filterControl.changeHandler = ^(NSInteger index) { weakSelf.filterIndex = index; [weakSelf applyFilter]; };
     self.sidebar.datePresetControl.changeHandler = ^(NSInteger index) { [weakSelf selectDateFilter:(TodoDateFilterMode)index]; };
     self.sidebar.sortControl.changeHandler = ^(NSInteger index) {
@@ -1034,7 +1037,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.sidebar.sortControl.labels = english ? @[@"Original", @"Newest", @"Priority"] : @[@"默认", @"最新", @"优先级"];
     self.sidebar.sortControl.selectedIndex = self.sortMode;
     self.sidebar.sortControl.accessibilityLabel = TodoLocalized(self.language, @"任务排序", @"Task sorting");
-    self.sidebar.clearButton.title = TodoLocalized(self.language, @"清除已完成", @"Clear Done");
+    self.sidebar.managementButton.title = TodoLocalized(self.language, @"管理…", @"Manage…");
+    self.sidebar.managementButton.accessibilityLabel = TodoLocalized(self.language, @"管理任务", @"Manage tasks");
 
     self.detail.priorityLabel.stringValue = TodoLocalized(self.language, @"优先级", @"Priority");
     self.detail.priorityControl.accessibilityLabel = TodoLocalized(self.language, @"任务优先级", @"Task priority");
@@ -1082,10 +1086,199 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     if (![self saveIfNeeded]) return;
     NSNumber *selectedID = self.selectedID;
     [self reloadSummaries];
-    if (selectedID && [self summaryForID:selectedID]) {
+    NSDictionary *summary = selectedID ? [self summaryForID:selectedID] : nil;
+    if (summary && [summary[@"archived"] boolValue] == self.archiveView) {
         [self selectID:selectedID];
+    } else if (selectedID) {
+        self.selectedID = nil;
+        [self clearCurrent];
     }
 }
+- (void)showManagementMenu {
+    NSInteger completedCount = 0;
+    NSInteger archivedCount = 0;
+    for (NSDictionary *summary in self.summaries) {
+        if ([summary[@"archived"] boolValue]) archivedCount++;
+        else if ([summary[@"completed"] boolValue]) completedCount++;
+    }
+
+    BOOL currentArchived = [self.currentTodo[@"archived"] boolValue];
+    NSMenu *menu = [NSMenu new];
+    menu.autoenablesItems = NO;
+
+    NSString *archiveViewTitle = self.archiveView
+        ? TodoLocalized(self.language, @"返回任务列表", @"Show Current Tasks")
+        : [NSString stringWithFormat:TodoLocalized(self.language, @"查看归档（%ld）", @"Show Archive (%ld)"), (long)archivedCount];
+    NSMenuItem *archiveViewItem = [menu addItemWithTitle:archiveViewTitle action:@selector(toggleArchiveView:) keyEquivalent:@""];
+    archiveViewItem.target = self;
+    archiveViewItem.enabled = self.archiveView || archivedCount > 0;
+    archiveViewItem.state = self.archiveView ? NSControlStateValueOn : NSControlStateValueOff;
+
+    [menu addItem:NSMenuItem.separatorItem];
+
+    NSString *currentTitle = self.archiveView
+        ? TodoLocalized(self.language, @"恢复当前任务", @"Restore Current Task")
+        : TodoLocalized(self.language, @"归档当前任务", @"Archive Current Task");
+    NSMenuItem *currentItem = [menu addItemWithTitle:currentTitle action:@selector(toggleArchiveCurrent:) keyEquivalent:@""];
+    currentItem.target = self;
+    currentItem.enabled = self.currentTodo != nil && currentArchived == self.archiveView;
+
+    NSString *visibleTitle = self.archiveView
+        ? [NSString stringWithFormat:TodoLocalized(self.language, @"恢复当前列表（%ld）", @"Restore Visible (%ld)"), (long)self.filtered.count]
+        : [NSString stringWithFormat:TodoLocalized(self.language, @"归档当前列表（%ld）", @"Archive Visible (%ld)"), (long)self.filtered.count];
+    NSMenuItem *visibleItem = [menu addItemWithTitle:visibleTitle action:@selector(toggleArchiveVisible:) keyEquivalent:@""];
+    visibleItem.target = self;
+    visibleItem.enabled = self.filtered.count > 0;
+
+    NSMenuItem *archiveCompletedItem = [menu addItemWithTitle:
+        [NSString stringWithFormat:TodoLocalized(self.language, @"归档已完成（%ld）", @"Archive Completed (%ld)"), (long)completedCount]
+        action:@selector(archiveCompletedFromMenu:) keyEquivalent:@""];
+    archiveCompletedItem.target = self;
+    archiveCompletedItem.enabled = completedCount > 0;
+    archiveCompletedItem.hidden = self.archiveView;
+
+    NSMenuItem *restoreAllItem = [menu addItemWithTitle:
+        [NSString stringWithFormat:TodoLocalized(self.language, @"恢复所有归档（%ld）", @"Restore All Archived (%ld)"), (long)archivedCount]
+        action:@selector(restoreAllArchivedFromMenu:) keyEquivalent:@""];
+    restoreAllItem.target = self;
+    restoreAllItem.enabled = archivedCount > 0;
+
+    [menu addItem:NSMenuItem.separatorItem];
+
+    NSMenuItem *deleteCompletedItem = [menu addItemWithTitle:
+        [NSString stringWithFormat:TodoLocalized(self.language, @"删除已完成（%ld）…", @"Delete Completed (%ld)…"), (long)completedCount]
+        action:@selector(confirmClearCompleted:) keyEquivalent:@""];
+    deleteCompletedItem.target = self;
+    deleteCompletedItem.enabled = completedCount > 0;
+
+    NSMenuItem *deleteArchivedItem = [menu addItemWithTitle:
+        [NSString stringWithFormat:TodoLocalized(self.language, @"删除所有归档（%ld）…", @"Delete All Archived (%ld)…"), (long)archivedCount]
+        action:@selector(confirmClearArchived:) keyEquivalent:@""];
+    deleteArchivedItem.target = self;
+    deleteArchivedItem.enabled = archivedCount > 0;
+
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, 0) inView:self.sidebar.managementButton];
+}
+- (void)toggleArchiveView:(id)sender {
+    if (![self saveIfNeeded]) return;
+    self.archiveView = !self.archiveView;
+    if (self.currentTodo && [self.currentTodo[@"archived"] boolValue] != self.archiveView) {
+        self.selectedID = nil;
+        [self clearCurrent];
+    }
+    [self applyFilter];
+}
+- (BOOL)setArchivedForIDs:(NSArray<NSNumber *> *)todoIDs archived:(BOOL)archived {
+    if (todoIDs.count == 0) return YES;
+    if (![self saveIfNeeded]) return NO;
+    NSError *error = nil;
+    if (!BridgeCall(@{@"command": @"setArchived", @"ids": todoIDs, @"archived": @(archived)}, &error)) {
+        [self showError:error];
+        return NO;
+    }
+    if (self.selectedID && [todoIDs containsObject:self.selectedID]) {
+        self.selectedID = nil;
+        [self clearCurrent];
+    }
+    [self reloadSummaries];
+    return YES;
+}
+- (void)toggleArchiveCurrent:(id)sender {
+    if (!self.selectedID) return;
+    [self setArchivedForIDs:@[self.selectedID] archived:!self.archiveView];
+}
+- (void)toggleArchiveVisible:(id)sender {
+    NSMutableArray<NSNumber *> *todoIDs = [NSMutableArray arrayWithCapacity:self.filtered.count];
+    for (NSDictionary *summary in self.filtered) {
+        NSNumber *todoID = summary[@"id"];
+        if (todoID) [todoIDs addObject:todoID];
+    }
+    [self setArchivedForIDs:todoIDs archived:!self.archiveView];
+}
+- (void)archiveCompletedFromMenu:(id)sender {
+    if (![self saveIfNeeded]) return;
+    BOOL selectedMoves = self.currentTodo && ![self.currentTodo[@"archived"] boolValue] && [self.currentTodo[@"completed"] boolValue];
+    NSError *error = nil;
+    if (!BridgeCall(@{@"command": @"archiveCompleted"}, &error)) {
+        [self showError:error];
+        return;
+    }
+    if (selectedMoves) {
+        self.selectedID = nil;
+        [self clearCurrent];
+    }
+    [self reloadSummaries];
+}
+- (void)restoreAllArchivedFromMenu:(id)sender {
+    if (![self saveIfNeeded]) return;
+    BOOL selectedMoves = [self.currentTodo[@"archived"] boolValue];
+    NSError *error = nil;
+    if (!BridgeCall(@{@"command": @"restoreArchived"}, &error)) {
+        [self showError:error];
+        return;
+    }
+    if (selectedMoves) {
+        self.selectedID = nil;
+        [self clearCurrent];
+    }
+    [self reloadSummaries];
+}
+- (BOOL)confirmDeletionTitle:(NSString *)title message:(NSString *)message {
+    NSAlert *alert = [NSAlert new];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = title;
+    alert.informativeText = message;
+    [alert addButtonWithTitle:TodoLocalized(self.language, @"删除", @"Delete")];
+    [alert addButtonWithTitle:TodoLocalized(self.language, @"取消", @"Cancel")];
+    return [alert runModal] == NSAlertFirstButtonReturn;
+}
+- (void)performClearCompleted {
+    if (![self saveIfNeeded]) return;
+    BOOL selectedDeleted = self.currentTodo && ![self.currentTodo[@"archived"] boolValue] && [self.currentTodo[@"completed"] boolValue];
+    NSError *error = nil;
+    if (!BridgeCall(@{@"command": @"clearCompleted"}, &error)) {
+        [self showError:error];
+        return;
+    }
+    if (selectedDeleted) {
+        self.selectedID = nil;
+        [self clearCurrent];
+    }
+    [self reloadSummaries];
+}
+- (void)confirmClearCompleted:(id)sender {
+    NSInteger count = 0;
+    for (NSDictionary *summary in self.summaries) {
+        if (![summary[@"archived"] boolValue] && [summary[@"completed"] boolValue]) count++;
+    }
+    if (count == 0) return;
+    NSString *title = [NSString stringWithFormat:TodoLocalized(self.language, @"删除 %ld 个已完成任务？", @"Delete %ld completed tasks?"), (long)count];
+    NSString *message = TodoLocalized(self.language, @"此操作无法撤销。归档任务不会被删除。", @"This cannot be undone. Archived tasks will not be deleted.");
+    if ([self confirmDeletionTitle:title message:message]) [self performClearCompleted];
+}
+- (void)performClearArchived {
+    if (![self saveIfNeeded]) return;
+    BOOL selectedDeleted = [self.currentTodo[@"archived"] boolValue];
+    NSError *error = nil;
+    if (!BridgeCall(@{@"command": @"clearArchived"}, &error)) {
+        [self showError:error];
+        return;
+    }
+    if (selectedDeleted) {
+        self.selectedID = nil;
+        [self clearCurrent];
+    }
+    [self reloadSummaries];
+}
+- (void)confirmClearArchived:(id)sender {
+    NSInteger count = 0;
+    for (NSDictionary *summary in self.summaries) if ([summary[@"archived"] boolValue]) count++;
+    if (count == 0) return;
+    NSString *title = [NSString stringWithFormat:TodoLocalized(self.language, @"删除 %ld 个归档任务？", @"Delete %ld archived tasks?"), (long)count];
+    NSString *message = TodoLocalized(self.language, @"归档中的任务将被永久删除，此操作无法撤销。", @"Archived tasks will be permanently deleted. This cannot be undone.");
+    if ([self confirmDeletionTitle:title message:message]) [self performClearArchived];
+}
+
 - (void)applyFilter {
     NSInteger statusFilter = self.filterIndex;
     NSDate *effectiveFrom = self.createdFromDate;
@@ -1109,7 +1302,10 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     double fromMs = hasFrom ? effectiveFrom.timeIntervalSince1970 * 1000.0 : 0;
     double toMs = hasTo ? effectiveTo.timeIntervalSince1970 * 1000.0 : 0;
 
+    BOOL archiveView = self.archiveView;
     NSPredicate *predicate = [NSPredicate predicateWithBlock:^BOOL(NSDictionary *summary, NSDictionary *bindings) {
+        BOOL archived = [summary[@"archived"] boolValue];
+        if (archived != archiveView) return NO;
         BOOL completed = [summary[@"completed"] boolValue];
         if (statusFilter == 1 && completed) return NO;
         if (statusFilter == 2 && !completed) return NO;
@@ -1148,23 +1344,32 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     }
     self.filtered = filtered;
     NSInteger active = 0;
-    BOOL hasCompleted = NO;
+    NSInteger currentCount = 0;
+    NSInteger archivedCount = 0;
     for (NSDictionary *summary in self.summaries) {
-        if ([summary[@"completed"] boolValue]) hasCompleted = YES;
-        else active++;
+        if ([summary[@"archived"] boolValue]) {
+            archivedCount++;
+        } else {
+            currentCount++;
+            if (![summary[@"completed"] boolValue]) active++;
+        }
     }
 
-    if (self.dateFilterMode != TodoDateFilterModeAll) {
+    if (self.archiveView) {
         self.sidebar.countLabel.stringValue = self.language == TodoLanguageEnglish
-            ? [NSString stringWithFormat:@"%ld shown · %ld tasks", (long)self.filtered.count, (long)self.summaries.count]
-            : [NSString stringWithFormat:@"%ld 项显示 · %ld 项任务", (long)self.filtered.count, (long)self.summaries.count];
+            ? [NSString stringWithFormat:@"%ld shown · %ld archived", (long)self.filtered.count, (long)archivedCount]
+            : [NSString stringWithFormat:@"%ld 项显示 · %ld 项归档", (long)self.filtered.count, (long)archivedCount];
+    } else if (self.dateFilterMode != TodoDateFilterModeAll) {
+        self.sidebar.countLabel.stringValue = self.language == TodoLanguageEnglish
+            ? [NSString stringWithFormat:@"%ld shown · %ld tasks", (long)self.filtered.count, (long)currentCount]
+            : [NSString stringWithFormat:@"%ld 项显示 · %ld 项任务", (long)self.filtered.count, (long)currentCount];
     } else {
         self.sidebar.countLabel.stringValue = self.language == TodoLanguageEnglish
-            ? [NSString stringWithFormat:@"%ld active · %ld tasks", (long)active, (long)self.summaries.count]
-            : [NSString stringWithFormat:@"%ld 项待办 · %ld 项任务", (long)active, (long)self.summaries.count];
+            ? [NSString stringWithFormat:@"%ld active · %ld tasks", (long)active, (long)currentCount]
+            : [NSString stringWithFormat:@"%ld 项待办 · %ld 项任务", (long)active, (long)currentCount];
     }
-    self.sidebar.clearButton.hidden = !hasCompleted;
-    self.sidebar.toggleAllButton.title = active == 0 && self.summaries.count
+    self.sidebar.toggleAllButton.hidden = self.archiveView;
+    self.sidebar.toggleAllButton.title = active == 0 && currentCount > 0
         ? TodoLocalized(self.language, @"全部恢复", @"Restore All")
         : TodoLocalized(self.language, @"全部完成", @"Complete All");
     [self.sidebar.tableView reloadData];
@@ -1430,6 +1635,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 - (void)setSaveStatus:(NSString *)status error:(BOOL)isError { self.detail.saveStatus.stringValue=status; self.detail.saveStatus.textColor=isError?NSColor.systemRedColor:NSColor.secondaryLabelColor; }
 - (void)addEditableTask {
     if (![self saveIfNeeded]) return;
+    self.archiveView = NO;
     NSError *error = nil;
     NSDictionary *summary = BridgeCall(@{@"command": @"add", @"title": TodoLocalized(self.language, @"新任务", @"New Task")}, &error);
     if (!summary) {
@@ -1444,8 +1650,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     }
 }
 - (void)toggleID:(NSNumber *)todoID completed:(BOOL)completed { if ([todoID isEqual:self.selectedID] && ![self saveIfNeeded]) { [self reloadSummaries]; return; } NSError *error=nil; NSDictionary *todo=BridgeCall(@{@"command":@"update",@"id":todoID,@"completed":@(completed)},&error); if (!todo){[self showError:error];[self reloadSummaries];return;} [self reloadSummaries]; if ([todoID isEqual:self.selectedID]) { self.currentTodo=todo; [self updateCompletion]; } }
-- (void)toggleAll { if (![self saveIfNeeded]) return; BOOL complete=NO; for (NSDictionary *s in self.summaries) if (![s[@"completed"] boolValue]) {complete=YES;break;} NSError *error=nil; id value=BridgeCall(@{@"command":@"setAllCompleted",@"completed":@(complete)},&error); if(!value){[self showError:error];return;} self.summaries=value; [self applyFilter]; if(self.selectedID)[self selectID:self.selectedID]; }
-- (void)clearCompleted { if (![self saveIfNeeded]) return; BOOL selectedCompleted=[self summaryForID:self.selectedID][@"completed"]?[ [self summaryForID:self.selectedID][@"completed"] boolValue]:NO; NSError *error=nil; if(!BridgeCall(@{@"command":@"clearCompleted"},&error)){[self showError:error];return;} if(selectedCompleted){self.selectedID=nil;[self clearCurrent];} [self reloadSummaries]; }
+- (void)toggleAll { if (![self saveIfNeeded]) return; BOOL complete=NO; for (NSDictionary *s in self.summaries) if (![s[@"archived"] boolValue] && ![s[@"completed"] boolValue]) {complete=YES;break;} NSError *error=nil; id value=BridgeCall(@{@"command":@"setAllCompleted",@"completed":@(complete)},&error); if(!value){[self showError:error];return;} self.summaries=value; [self applyFilter]; if(self.selectedID)[self selectID:self.selectedID]; }
 - (void)toggleCurrent { if(![self saveIfNeeded]||!self.currentTodo)return; [self toggleID:self.selectedID completed:![self.currentTodo[@"completed"] boolValue]]; }
 - (void)updateCompletion { BOOL completed=[self.currentTodo[@"completed"] boolValue]; self.detail.completeButton.title=completed?TodoLocalized(self.language, @"恢复为待办", @"Restore to Active"):TodoLocalized(self.language, @"标记完成", @"Mark Complete"); self.detail.completeButton.foregroundColor=completed?NSColor.systemGreenColor:NSColor.secondaryLabelColor; [self.detail setNeedsLayout:YES]; [self.detail layoutSubtreeIfNeeded]; }
 - (void)deleteCurrent { if(!self.selectedID)return; NSNumber *deletedID=self.selectedID; NSError *error=nil; if(!BridgeCall(@{@"command":@"delete",@"id":deletedID},&error)){[self showError:error];return;} [self.resultExpansionOverrides removeObjectForKey:deletedID]; self.selectedID=nil; [self clearCurrent]; [self reloadSummaries]; }
@@ -1624,6 +1829,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     NSString *benchmarkFrom = environment[@"TODO_BENCHMARK_FROM_MS"];
     NSString *benchmarkTo = environment[@"TODO_BENCHMARK_TO_MS"];
     NSString *benchmarkSort = environment[@"TODO_BENCHMARK_SORT"];
+    NSString *benchmarkArchiveView = environment[@"TODO_BENCHMARK_ARCHIVE_VIEW"];
+    NSString *benchmarkManagementAction = environment[@"TODO_BENCHMARK_MANAGEMENT_ACTION"];
     NSString *benchmarkRefreshAfterMs = environment[@"TODO_BENCHMARK_REFRESH_AFTER_MS"];
     if ([benchmarkDateFilter isEqualToString:@"24h"]) {
         self.dateFilterMode = TodoDateFilterModeLast24Hours;
@@ -1644,7 +1851,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         self.sortMode = TodoSortModeOriginal;
         self.sidebar.sortControl.selectedIndex = self.sortMode;
     }
-    if (benchmarkDateFilter.length || benchmarkFrom.length || benchmarkTo.length || benchmarkSort.length) {
+    if (benchmarkArchiveView.length) self.archiveView = benchmarkArchiveView.boolValue;
+    if (benchmarkDateFilter.length || benchmarkFrom.length || benchmarkTo.length || benchmarkSort.length || benchmarkArchiveView.length) {
         [self updateDateRangeControls];
         [self applyFilter];
     }
@@ -1668,6 +1876,18 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     NSString *forcedPriority = environment[@"TODO_BENCHMARK_PRIORITY"];
     if (forcedPriority.length) {
         [self changeCurrentPriority:TodoPriorityFromValue(forcedPriority)];
+    }
+
+    if ([benchmarkManagementAction isEqualToString:@"archive_completed"]) {
+        [self archiveCompletedFromMenu:nil];
+    } else if ([benchmarkManagementAction isEqualToString:@"archive_visible"]) {
+        [self toggleArchiveVisible:nil];
+    } else if ([benchmarkManagementAction isEqualToString:@"restore_archived"]) {
+        [self restoreAllArchivedFromMenu:nil];
+    } else if ([benchmarkManagementAction isEqualToString:@"delete_completed"]) {
+        [self performClearCompleted];
+    } else if ([benchmarkManagementAction isEqualToString:@"delete_archived"]) {
+        [self performClearArchived];
     }
 
     NSString *replacementDocument = environment[@"TODO_BENCHMARK_REPLACE_DOCUMENT"];
@@ -1723,12 +1943,17 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
             NSNumber *thirdFilteredID = self.filtered.count > 2 ? self.filtered[2][@"id"] : nil;
             TaskCellView *firstCell = self.filtered.count > 0 ? (TaskCellView *)[self.sidebar.tableView viewAtColumn:0 row:0 makeIfNecessary:YES] : nil;
             fprintf(stderr,
-                    "mode=%s viewMode=%s sortMode=%s firstFilteredID=%s firstCellID=%s secondFilteredID=%s thirdFilteredID=%s selectedID=%s selectedPriority=%s priorityControl=%ld resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
+                    "mode=%s viewMode=%s sortMode=%s archiveView=%d firstFilteredID=%s firstCellID=%s firstTitleX=%.0f firstTitleWidth=%.0f firstTitleY=%.0f firstIDY=%.0f secondFilteredID=%s thirdFilteredID=%s selectedID=%s selectedPriority=%s priorityControl=%ld resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s managementTitle=%s managementHidden=%d todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
                     mode.UTF8String,
                     self.viewMode == TodoViewModeEdit ? "edit" : (self.viewMode == TodoViewModeSplit ? "split" : "preview"),
                     self.sortMode == TodoSortModeNewestFirst ? "newest" : (self.sortMode == TodoSortModePriorityFirst ? "priority" : "original"),
+                    self.archiveView,
                     firstFilteredID.stringValue.UTF8String ?: "none",
                     firstCell.idLabel.stringValue.UTF8String ?: "none",
+                    NSMinX(firstCell.titleLabel.frame),
+                    NSWidth(firstCell.titleLabel.frame),
+                    NSMinY(firstCell.titleLabel.frame),
+                    NSMinY(firstCell.idLabel.frame),
                     secondFilteredID.stringValue.UTF8String ?: "none",
                     thirdFilteredID.stringValue.UTF8String ?: "none",
                     self.selectedID.stringValue.UTF8String ?: "none",
@@ -1740,6 +1965,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
                     self.language == TodoLanguageEnglish ? "en" : "zh",
                     self.sidebar.headingLabel.stringValue.UTF8String,
                     self.sidebar.createTaskButton.title.UTF8String,
+                    self.sidebar.managementButton.title.UTF8String,
+                    self.sidebar.managementButton.hidden,
                     (unsigned long)self.summaries.count, (unsigned long)self.filtered.count,
                     NSWidth(self.view.window.contentView.bounds), NSHeight(self.view.window.contentView.bounds),
                     NSWidth(self.split.bounds), NSHeight(self.split.bounds),

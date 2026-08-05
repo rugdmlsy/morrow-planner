@@ -43,6 +43,8 @@ pub struct Todo {
     pub completion_result: String,
     #[serde(default)]
     pub priority: TodoPriority,
+    #[serde(default)]
+    pub archived: bool,
     pub completed: bool,
     #[serde(default)]
     pub created_at_ms: i64,
@@ -146,6 +148,7 @@ impl TodoStore {
             content: String::new(),
             completion_result: String::new(),
             priority: TodoPriority::Low,
+            archived: false,
             completed: false,
             created_at_ms: now_ms(),
         };
@@ -219,7 +222,7 @@ impl TodoStore {
         let _lock = self.lock_exclusive()?;
         self.reload()?;
         let before = self.todos.len();
-        self.todos.retain(|todo| !todo.completed);
+        self.todos.retain(|todo| !todo.completed || todo.archived);
         let removed = before - self.todos.len();
         if removed > 0 {
             self.persist()?;
@@ -227,12 +230,76 @@ impl TodoStore {
         Ok(removed)
     }
 
+    pub fn clear_archived(&mut self) -> Result<usize, StoreError> {
+        let _lock = self.lock_exclusive()?;
+        self.reload()?;
+        let before = self.todos.len();
+        self.todos.retain(|todo| !todo.archived);
+        let removed = before - self.todos.len();
+        if removed > 0 {
+            self.persist()?;
+        }
+        Ok(removed)
+    }
+
+    pub fn set_archived_for_ids(
+        &mut self,
+        ids: &[u64],
+        archived: bool,
+    ) -> Result<usize, StoreError> {
+        let _lock = self.lock_exclusive()?;
+        self.reload()?;
+        let mut changed = 0;
+        for todo in &mut self.todos {
+            if ids.contains(&todo.id) && todo.archived != archived {
+                todo.archived = archived;
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.persist()?;
+        }
+        Ok(changed)
+    }
+
+    pub fn archive_completed(&mut self) -> Result<usize, StoreError> {
+        let _lock = self.lock_exclusive()?;
+        self.reload()?;
+        let mut changed = 0;
+        for todo in &mut self.todos {
+            if todo.completed && !todo.archived {
+                todo.archived = true;
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.persist()?;
+        }
+        Ok(changed)
+    }
+
+    pub fn restore_archived(&mut self) -> Result<usize, StoreError> {
+        let _lock = self.lock_exclusive()?;
+        self.reload()?;
+        let mut changed = 0;
+        for todo in &mut self.todos {
+            if todo.archived {
+                todo.archived = false;
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.persist()?;
+        }
+        Ok(changed)
+    }
+
     pub fn set_all_completed(&mut self, completed: bool) -> Result<usize, StoreError> {
         let _lock = self.lock_exclusive()?;
         self.reload()?;
         let mut changed = 0;
         for todo in &mut self.todos {
-            if todo.completed != completed {
+            if !todo.archived && todo.completed != completed {
                 todo.completed = completed;
                 changed += 1;
             }
@@ -488,6 +555,7 @@ mod tests {
                 content: String::new(),
                 completion_result: String::new(),
                 priority: TodoPriority::Low,
+                archived: false,
                 completed: true,
                 created_at_ms: first.created_at_ms,
             }]
@@ -616,6 +684,103 @@ mod tests {
     }
 
     #[test]
+    fn archives_restores_and_clears_tasks() {
+        let path = test_path("archive");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let first = store
+            .add("First".to_owned())
+            .expect("first should be added");
+        let second = store
+            .add("Second".to_owned())
+            .expect("second should be added");
+        store
+            .update(second.id, None, None, None, None, Some(true))
+            .expect("second should complete");
+
+        assert_eq!(
+            store
+                .set_archived_for_ids(&[first.id], true)
+                .expect("first should archive"),
+            1
+        );
+        assert!(
+            store
+                .list()
+                .iter()
+                .find(|todo| todo.id == first.id)
+                .unwrap()
+                .archived
+        );
+        assert_eq!(
+            store.archive_completed().expect("completed should archive"),
+            1
+        );
+        assert!(store.list().iter().all(|todo| todo.archived));
+
+        assert_eq!(
+            store
+                .clear_completed()
+                .expect("archived done should remain"),
+            0
+        );
+        assert_eq!(
+            store.restore_archived().expect("archives should restore"),
+            2
+        );
+        assert!(store.list().iter().all(|todo| !todo.archived));
+
+        store
+            .set_archived_for_ids(&[first.id], true)
+            .expect("first should archive again");
+        assert_eq!(store.clear_archived().expect("archive should delete"), 1);
+        assert_eq!(store.list().len(), 1);
+        assert_eq!(store.list()[0].id, second.id);
+        assert!(store.list()[0].completed);
+
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn bulk_completion_ignores_archived_tasks() {
+        let path = test_path("archived-completion");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let archived = store
+            .add("Archived".to_owned())
+            .expect("todo should be added");
+        let current = store
+            .add("Current".to_owned())
+            .expect("todo should be added");
+        store
+            .set_archived_for_ids(&[archived.id], true)
+            .expect("todo should archive");
+
+        assert_eq!(
+            store
+                .set_all_completed(true)
+                .expect("current tasks should complete"),
+            1
+        );
+        assert!(
+            !store
+                .list()
+                .iter()
+                .find(|todo| todo.id == archived.id)
+                .unwrap()
+                .completed
+        );
+        assert!(
+            store
+                .list()
+                .iter()
+                .find(|todo| todo.id == current.id)
+                .unwrap()
+                .completed
+        );
+
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
     fn migrates_legacy_todos_with_a_persisted_creation_time() {
         let path = test_path("legacy-created-at");
         fs::write(
@@ -628,6 +793,7 @@ mod tests {
         assert!(store.list()[0].created_at_ms > 0);
         assert!(store.list()[0].completion_result.is_empty());
         assert_eq!(store.list()[0].priority, TodoPriority::Low);
+        assert!(!store.list()[0].archived);
 
         let persisted = fs::read_to_string(&path).expect("migrated data should be readable");
         assert!(persisted.contains("createdAtMs"));
