@@ -192,9 +192,9 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
     CGFloat centerY = NSMidY(bounds);
     NSBezierPath *chevron = [NSBezierPath bezierPath];
     if (self.expanded) {
-        [chevron moveToPoint:NSMakePoint(16, centerY - 3)];
-        [chevron lineToPoint:NSMakePoint(20, centerY + 2)];
-        [chevron lineToPoint:NSMakePoint(24, centerY - 3)];
+        [chevron moveToPoint:NSMakePoint(16, centerY + 3)];
+        [chevron lineToPoint:NSMakePoint(20, centerY - 2)];
+        [chevron lineToPoint:NSMakePoint(24, centerY + 3)];
     } else {
         [chevron moveToPoint:NSMakePoint(18, centerY - 5)];
         [chevron lineToPoint:NSMakePoint(23, centerY)];
