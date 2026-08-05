@@ -22,6 +22,8 @@ enum Request {
         id: u64,
         title: Option<String>,
         content: Option<String>,
+        #[serde(rename = "completionResult")]
+        completion_result: Option<String>,
         completed: Option<bool>,
     },
     Delete {
@@ -185,11 +187,12 @@ fn handle_request(request: &str) -> Result<Value, String> {
             id,
             title,
             content,
+            completion_result,
             completed,
         } => {
             let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
             let todo = store
-                .update(id, title, content, completed)
+                .update(id, title, content, completion_result, completed)
                 .map_err(|error| error.to_string())?;
             serde_json::to_value(todo).map_err(|error| error.to_string())
         }
@@ -568,6 +571,7 @@ mod tests {
             id: 7,
             title: String::new(),
             content: "# Main title\n\nMore **detail** here".to_owned(),
+            completion_result: "Verified output".to_owned(),
             completed: false,
             created_at_ms: 1_234,
         });
@@ -575,6 +579,26 @@ mod tests {
         assert_eq!(summary.title, "Main title");
         assert_eq!(summary.subtitle, "More detail here");
         assert_eq!(summary.created_at_ms, 1_234);
+    }
+
+    #[test]
+    fn accepts_completion_result_in_update_requests() {
+        let request: Request = serde_json::from_str(
+            r#"{"command":"update","id":9,"completionResult":"Tests passed"}"#,
+        )
+        .expect("update request should parse");
+
+        match request {
+            Request::Update {
+                id,
+                completion_result,
+                ..
+            } => {
+                assert_eq!(id, 9);
+                assert_eq!(completion_result.as_deref(), Some("Tests passed"));
+            }
+            _ => panic!("expected update request"),
+        }
     }
 
     #[test]

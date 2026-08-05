@@ -13,6 +13,8 @@ Commands:
   undo <id>                              Restore a task
   edit <id> <title>                      Rename a task
   content <id> <text>                    Update task content
+  result <id> <text>                     Set the optional completion result
+  clear-result <id>                       Clear the completion result
   delete <id>                            Delete a task
   complete-all                           Complete every task
   restore-all                            Restore every task
@@ -66,7 +68,7 @@ fn run() -> Result<(), String> {
             let id = id_argument(&args, 1)?;
             let title = joined_argument(&args, 2, "edit requires a title")?;
             store
-                .update(id, Some(title), None, None)
+                .update(id, Some(title), None, None, None)
                 .map_err(|error| error.to_string())?;
             Ok(())
         }
@@ -74,7 +76,22 @@ fn run() -> Result<(), String> {
             let id = id_argument(&args, 1)?;
             let content = joined_argument(&args, 2, "content requires text")?;
             store
-                .update(id, None, Some(content), None)
+                .update(id, None, Some(content), None, None)
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        "result" => {
+            let id = id_argument(&args, 1)?;
+            let result = joined_argument(&args, 2, "result requires text")?;
+            store
+                .update(id, None, None, Some(result), None)
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        "clear-result" => {
+            let id = id_argument(&args, 1)?;
+            store
+                .update(id, None, None, Some(String::new()), None)
                 .map_err(|error| error.to_string())?;
             Ok(())
         }
@@ -188,7 +205,7 @@ fn display_title(todo: &todo_core::Todo) -> String {
 fn update_completed(store: &mut TodoStore, args: &[String], completed: bool) -> Result<(), String> {
     let id = id_argument(args, 1)?;
     store
-        .update(id, None, None, Some(completed))
+        .update(id, None, None, None, Some(completed))
         .map_err(|error| error.to_string())?;
     Ok(())
 }

@@ -10,6 +10,7 @@ use std::{
 
 pub const MAX_TITLE_LEN: usize = 240;
 pub const MAX_CONTENT_LEN: usize = 25_000;
+pub const MAX_COMPLETION_RESULT_LEN: usize = 10_000;
 pub const APP_IDENTIFIER: &str = "com.xycdev.todo";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -19,6 +20,8 @@ pub struct Todo {
     pub title: String,
     #[serde(default)]
     pub content: String,
+    #[serde(default)]
+    pub completion_result: String,
     pub completed: bool,
     #[serde(default)]
     pub created_at_ms: i64,
@@ -31,6 +34,7 @@ pub enum StoreError {
     InvalidTitle,
     TitleTooLong,
     ContentTooLong,
+    CompletionResultTooLong,
     EmptyTodo,
     NotFound(u64),
     DataDirectoryUnavailable,
@@ -46,6 +50,10 @@ impl fmt::Display for StoreError {
             Self::ContentTooLong => {
                 write!(f, "task content cannot exceed {MAX_CONTENT_LEN} characters")
             }
+            Self::CompletionResultTooLong => write!(
+                f,
+                "completion result cannot exceed {MAX_COMPLETION_RESULT_LEN} characters"
+            ),
             Self::EmptyTodo => write!(f, "task title and content cannot both be empty"),
             Self::NotFound(id) => write!(f, "task {id} was not found"),
             Self::DataDirectoryUnavailable => {
@@ -115,6 +123,7 @@ impl TodoStore {
             id: self.next_id,
             title,
             content: String::new(),
+            completion_result: String::new(),
             completed: false,
             created_at_ms: now_ms(),
         };
@@ -129,12 +138,16 @@ impl TodoStore {
         id: u64,
         title: Option<String>,
         content: Option<String>,
+        completion_result: Option<String>,
         completed: Option<bool>,
     ) -> Result<Todo, StoreError> {
         let _lock = self.lock_exclusive()?;
         self.reload()?;
         let normalized_title = title.map(normalize_optional_title).transpose()?;
         let normalized_content = content.map(normalize_content).transpose()?;
+        let normalized_completion_result = completion_result
+            .map(normalize_completion_result)
+            .transpose()?;
         let todo = self
             .todos
             .iter_mut()
@@ -146,6 +159,9 @@ impl TodoStore {
         }
         if let Some(content) = normalized_content {
             todo.content = content;
+        }
+        if let Some(completion_result) = normalized_completion_result {
+            todo.completion_result = completion_result;
         }
         if let Some(completed) = completed {
             todo.completed = completed;
@@ -376,6 +392,14 @@ fn normalize_content(content: String) -> Result<String, StoreError> {
     Ok(content.to_owned())
 }
 
+fn normalize_completion_result(result: String) -> Result<String, StoreError> {
+    let result = result.trim();
+    if result.chars().count() > MAX_COMPLETION_RESULT_LEN {
+        return Err(StoreError::CompletionResultTooLong);
+    }
+    Ok(result.to_owned())
+}
+
 fn temporary_path(path: &Path) -> PathBuf {
     let file_name = path
         .file_name()
@@ -425,7 +449,7 @@ mod tests {
             .add("Ship MVP".to_owned())
             .expect("todo should be added");
         store
-            .update(first.id, None, None, Some(true))
+            .update(first.id, None, None, None, Some(true))
             .expect("todo should be updated");
         store.delete(second.id).expect("todo should be deleted");
 
@@ -436,6 +460,7 @@ mod tests {
                 id: first.id,
                 title: "Write tests".to_owned(),
                 content: String::new(),
+                completion_result: String::new(),
                 completed: true,
                 created_at_ms: first.created_at_ms,
             }]
@@ -453,7 +478,7 @@ mod tests {
             .add("Remove".to_owned())
             .expect("todo should be added");
         store
-            .update(second.id, None, None, Some(true))
+            .update(second.id, None, None, None, Some(true))
             .expect("todo should be updated");
 
         assert_eq!(store.clear_completed().expect("clear should succeed"), 1);
@@ -476,11 +501,42 @@ mod tests {
                 Some(String::new()),
                 Some("First line\nMore detail".to_owned()),
                 None,
+                None,
             )
             .expect("content-only todo should be valid");
 
         assert!(updated.title.is_empty());
         assert_eq!(updated.content, "First line\nMore detail");
+
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn stores_and_clears_an_optional_completion_result() {
+        let path = test_path("completion-result");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let todo = store
+            .add("Ship release".to_owned())
+            .expect("todo should be added");
+
+        let updated = store
+            .update(
+                todo.id,
+                None,
+                None,
+                Some("Released v1.0 and verified the package".to_owned()),
+                Some(true),
+            )
+            .expect("completion result should update");
+        assert_eq!(
+            updated.completion_result,
+            "Released v1.0 and verified the package"
+        );
+
+        let cleared = store
+            .update(todo.id, None, None, Some("   ".to_owned()), None)
+            .expect("completion result should clear");
+        assert!(cleared.completion_result.is_empty());
 
         fs::remove_file(path).expect("test data should be removable");
     }
@@ -495,7 +551,7 @@ mod tests {
         assert!(todo.created_at_ms > 0);
 
         let updated = store
-            .update(todo.id, None, Some("Changed".to_owned()), Some(true))
+            .update(todo.id, None, Some("Changed".to_owned()), None, Some(true))
             .expect("todo should update");
         assert_eq!(updated.created_at_ms, todo.created_at_ms);
 
@@ -515,6 +571,7 @@ mod tests {
 
         let store = TodoStore::load(path.clone()).expect("legacy store should migrate");
         assert!(store.list()[0].created_at_ms > 0);
+        assert!(store.list()[0].completion_result.is_empty());
 
         let persisted = fs::read_to_string(&path).expect("migrated data should be readable");
         assert!(persisted.contains("createdAtMs"));
