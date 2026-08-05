@@ -704,7 +704,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     return NSInsetRect(divider, 0, -4.0);
 }
 - (NSView *)hitTest:(NSPoint)point {
-    if (self.resultExpanded && NSPointInRect(point, [self dividerHitRect])) return self;
+    NSPoint localPoint = self.superview ? [self convertPoint:point fromView:self.superview] : point;
+    if (self.resultExpanded && NSPointInRect(localPoint, [self dividerHitRect])) return self;
     return [super hitTest:point];
 }
 - (void)resetCursorRects {
@@ -1508,8 +1509,17 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
             NSRect previewUsed = self.detail.preview ? [self.detail.preview.layoutManager usedRectForTextContainer:self.detail.preview.textContainer] : NSZeroRect;
             NSRect resultPreviewUsed = self.detail.completionResultPreview ? [self.detail.completionResultPreview.layoutManager usedRectForTextContainer:self.detail.completionResultPreview.textContainer] : NSZeroRect;
             NSRect dividerHit = [self.detail dividerHitRect];
-            NSPoint headerEdgePoint = NSMakePoint(NSMidX(dividerHit), NSMinY(self.detail.completionResultDisclosure.frame) + 2.0);
-            BOOL dividerOwnsHeaderEdge = self.detail.resultExpanded && [self.detail hitTest:headerEdgePoint] == self.detail;
+            CGFloat dividerY = NSMidY(dividerHit);
+            NSArray<NSNumber *> *dividerFractions = @[@0.05, @0.5, @0.95];
+            NSMutableArray<NSNumber *> *dividerOwnership = [NSMutableArray arrayWithCapacity:dividerFractions.count];
+            for (NSNumber *fraction in dividerFractions) {
+                NSPoint localPoint = NSMakePoint(NSMinX(dividerHit) + NSWidth(dividerHit) * fraction.doubleValue, dividerY);
+                NSPoint superviewPoint = [self.detail convertPoint:localPoint toView:self.detail.superview];
+                [dividerOwnership addObject:@([self.detail hitTest:superviewPoint] == self.detail)];
+            }
+            BOOL dividerOwnsLeft = dividerOwnership[0].boolValue;
+            BOOL dividerOwnsCenter = dividerOwnership[1].boolValue;
+            BOOL dividerOwnsRight = dividerOwnership[2].boolValue;
             __block NSUInteger resultPreviewLinks = 0;
             if (self.detail.completionResultPreview.textStorage.length > 0) {
                 [self.detail.completionResultPreview.textStorage enumerateAttribute:NSLinkAttributeName
@@ -1520,7 +1530,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
                 }];
             }
             fprintf(stderr,
-                    "mode=%s viewMode=%s selectedID=%s resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsHeaderEdge=%d\n",
+                    "mode=%s viewMode=%s selectedID=%s resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
                     mode.UTF8String,
                     self.viewMode == TodoViewModeEdit ? "edit" : (self.viewMode == TodoViewModeSplit ? "split" : "preview"),
                     self.selectedID.stringValue.UTF8String ?: "none",
@@ -1556,7 +1566,9 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
                     self.detail.editorScroll.hidden,
                     self.detail.previewScroll.hidden,
                     NSHeight(dividerHit),
-                    dividerOwnsHeaderEdge);
+                    dividerOwnsLeft,
+                    dividerOwnsCenter,
+                    dividerOwnsRight);
         });
     }
 }
