@@ -11,24 +11,41 @@ The desktop application contains no WebView, JavaScript runtime, HTML renderer, 
 
 ## Task hierarchy
 
-The sidebar shows parent projects and their indented child tasks in one list. Parent and child tasks both have global numeric IDs and are selectable, filterable, sortable, and controllable from `todoctl`. Each new parent is created with one child task by default. The `+` button on a parent row adds another child and opens it immediately.
+Every project contains at least one child task.
 
-A selected parent or child uses the same full detail workspace. Both support:
+When a project has exactly one child, the sidebar shows one compact project row instead of a redundant parent-and-child pair. The row keeps the parent ID, such as `#12`, but its title, subtitle, priority, completion state, Markdown document, and completion result come from the unique child. Selecting the row opens that child in the full editor. The row’s `+` button adds a second child and expands the project.
+
+When a project has multiple children, the sidebar shows a parent row followed by indented child rows:
+
+```text
+#12   Release project
+  ##1 Build package
+  ##2 Run tests
+  ##3 Publish artifacts
+```
+
+Child labels are local to their parent. They are displayed as `##1`, `##2`, and `##3`, rather than exposing unrelated global child numbers. Their shell selectors are `12##1`, `12##2`, and `12##3`. These local indexes remain stable under filtering and sorting; internal global IDs remain in the JSON data for persistence and backward compatibility.
+
+A multi-child parent is a grouping record, not another document. It has only an optional title. When the title is empty, the first child’s displayed title is used automatically. Selecting the parent opens a title-only editor; Markdown modes, completion result, and priority editing are hidden. Parent priority is derived from the highest child priority, and parent completion is derived from child completion.
+
+A child can be completed independently. A parent is active when none of its children are complete, partially completed when only some are complete, and completed only when every child is complete. Completing or restoring a parent applies the same state to all children. At least one child is retained under every parent.
+
+Each child supports:
 
 - an editable Markdown document;
 - Edit, Split, and Preview modes;
 - a multiline Markdown completion result;
 - Low, Medium, or High priority;
-- independent creation time and stable ID;
-- completion and restoration controls.
+- an immutable creation time;
+- independent completion and restoration.
 
-A child can be completed independently. A parent is active when none of its children are complete, partially completed when only some are complete, and completed only when every child is complete. Completing or restoring a parent applies the same state to all of its children. At least one child is retained under every parent.
+The completion-result section is collapsible. Empty results start collapsed, non-empty results start expanded, and the document/result ratio can be changed by dragging the divider. Markdown is parsed by `pulldown-cmark`; Rust returns structured style runs and AppKit renders them without an HTML or JavaScript runtime.
 
-The first non-empty Markdown line supplies the title shown in the sidebar. Parent rows show child progress, such as `2/5`. Partial parents use an orange mixed-state checkbox; completed tasks use a green checkbox. Archive operations remain group-scoped: archiving a parent hides the parent and all of its children together.
+The sidebar combines status filtering, creation-time filtering, and sorting in one Filter / Sort menu. Parent context is retained when a matching child is shown. Local child indexes remain stable under filtering and sorting, so a child labeled `##2` does not become `##1` merely because its sibling is filtered out or reordered.
 
-The completion-result section is collapsible. Empty results start collapsed, non-empty results start expanded, and the task/result ratio can be changed by dragging the divider. Split mode places the editor on the left and a live Markdown preview on the right. Markdown is parsed by `pulldown-cmark`; Rust returns structured style runs and AppKit renders them without an HTML or JavaScript runtime.
+Archive operations remain project-scoped. Archiving a parent hides all of its children. Deleting a compact one-child row from the native app removes the whole project rather than attempting to delete its required final child. Tasks changed by another process can be loaded with the refresh button or Command-R without restarting the app.
 
-The sidebar combines status filtering, creation-time filtering, and sorting in one Filter / Sort menu. It supports active, completed, or all tasks; all time, the last 24 hours, the last 7 days, or a custom inclusive date range; and original, newest-first, or priority-first order. Parent-child grouping is retained while matching children remain individually visible. Tasks changed by another process can be reloaded with the refresh button or Command-R without restarting the app.
+## Data and migration
 
 Data is stored at:
 
@@ -36,7 +53,18 @@ Data is stored at:
 ~/Library/Application Support/com.xycdev.todo/todos.json
 ```
 
-Set `TODO_DATA_FILE` to use another file. Legacy parent-only records are migrated to contain one first-class child without discarding the original parent data. Missing child fields receive safe defaults, missing creation times use the best available parent or file timestamp, and duplicate legacy child IDs are reassigned so IDs are globally unique.
+Set `TODO_DATA_FILE` to use another file.
+
+Legacy records are migrated automatically:
+
+- parent-only records receive one child containing the original document;
+- legacy parent content and completion results are moved into the first child;
+- legacy parent priority is transferred to the first child when it is higher;
+- redundant single-child parent titles and generated placeholders are cleared;
+- missing child fields receive safe defaults;
+- duplicate child IDs are reassigned so internal IDs remain globally unique.
+
+Migration uses the same exclusive file lock as normal writes.
 
 ## Build the macOS app
 
@@ -68,41 +96,66 @@ cargo build --release --manifest-path src-tauri/Cargo.toml -p todoctl
 
 The binary is written to `src-tauri/target/release/todoctl`.
 
-Create a parent and inspect its default child:
+Create a compact one-child project:
 
 ```bash
-PARENT_ID=$(todoctl add "Ship the release")
-todoctl show "$PARENT_ID"
-todoctl subtask-list "$PARENT_ID"
+PARENT_ID=$(todoctl add "Write the first draft")
+todoctl list
 ```
 
-Add and edit a child. Once its global ID is known, the same generic commands used for parents work directly on it:
+The list contains one row such as:
+
+```text
+#1  todo  low  task  Write the first draft
+```
+
+While the project has one child, its visible parent ID aliases that child for document-level commands:
 
 ```bash
-CHILD_ID=$(todoctl subtask-add "$PARENT_ID" "Run the full test suite")
+todoctl content "$PARENT_ID" "# Write the first draft\n\nDraft the introduction."
+todoctl result "$PARENT_ID" "Draft reviewed"
+todoctl priority "$PARENT_ID" high
+todoctl edit "$PARENT_ID" "Write the revised draft"
+```
 
-todoctl content "$CHILD_ID" "# Run the full test suite\n\nVerify unit and integration tests."
-todoctl result "$CHILD_ID" "All tests passed"
-todoctl priority "$CHILD_ID" high
-todoctl done "$CHILD_ID"
-todoctl show "$CHILD_ID" --json
-todoctl undo "$CHILD_ID"
-todoctl delete "$CHILD_ID"
+Add another child. `subtask-add` prints a parent-local selector:
+
+```bash
+SECOND=$(todoctl subtask-add "$PARENT_ID" "Run the review")
+# SECOND is 1##2
+
+todoctl content "$PARENT_ID##1" "# Draft\n\nPrepare the document."
+todoctl content "$SECOND" "# Review\n\nCheck the final document."
+todoctl done "$SECOND"
+```
+
+Once a project has multiple children, its parent ID addresses only the optional group title:
+
+```bash
+todoctl edit "$PARENT_ID" "Publication"
+todoctl edit "$PARENT_ID" ""  # return to the first-child title fallback
+```
+
+Use `P##N` for child content, completion result, and priority:
+
+```bash
+todoctl show "$PARENT_ID##1"
+todoctl result "$PARENT_ID##1" "Artifact verified"
+todoctl priority "$PARENT_ID##2" medium
+todoctl undo "$PARENT_ID##2"
+todoctl delete "$PARENT_ID##2"
 ```
 
 Other commands:
 
 ```bash
-todoctl list
-todoctl list active
-todoctl list completed
-todoctl edit <id> "New title"
-todoctl clear-result <id>
+todoctl list [all|active|completed|archived]
+todoctl subtask-list <parent-id>
 todoctl done <parent-id>       # completes every child
 todoctl undo <parent-id>       # restores every child
 todoctl archive <parent-id>
 todoctl unarchive <parent-id>
-todoctl list archived
+todoctl delete <parent-id>     # deletes the whole project
 todoctl complete-all
 todoctl restore-all
 todoctl archive-completed
@@ -112,19 +165,12 @@ todoctl clear-archived
 todoctl path
 ```
 
-Compatibility commands remain available for scripts that specify both IDs:
-
-```bash
-todoctl subtask-done <parent-id> <child-id>
-todoctl subtask-undo <parent-id> <child-id>
-todoctl subtask-edit <parent-id> <child-id> "New title"
-todoctl subtask-delete <parent-id> <child-id>
-```
+Numeric internal child IDs remain accepted for compatibility, but normal text output and new scripts should use `P##N` selectors.
 
 For isolated tests:
 
 ```bash
-todoctl --data-file /tmp/todo-test.json add "Test project"
+todoctl --data-file /tmp/todo-test.json add "Test task"
 ```
 
 ## Verification
@@ -133,6 +179,7 @@ todoctl --data-file /tmp/todo-test.json add "Test project"
 cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
 cargo test --manifest-path src-tauri/Cargo.toml --workspace
 cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
+cargo build --release --manifest-path src-tauri/Cargo.toml -p todoctl
 ./native-macos/build.sh
 codesign --verify --deep --strict native-macos/build/Todo.app
 ```
@@ -150,4 +197,4 @@ TODO_LAYOUT_DIAGNOSTICS=1 \
 native-macos/build/Todo.app/Contents/MacOS/Todo
 ```
 
-`TODO_BENCHMARK_TASK_ID` accepts a parent or child global ID. `TODO_BENCHMARK_SELECT_FIRST_CHILD=1` selects the first visible child when an exact ID is not supplied. Edit, Split, Preview, filtering, sorting, refresh, completion-result expansion, and priority diagnostics use the same isolated startup path.
+`TODO_BENCHMARK_TASK_ID` uses the internal numeric ID because it is a development-only diagnostic interface. User-facing CLI operations should use a parent ID or `P##N` child selector.

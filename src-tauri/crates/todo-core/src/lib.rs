@@ -113,6 +113,38 @@ impl Todo {
         self.subtasks.iter().filter(|task| task.completed).count()
     }
 
+    pub fn effective_title(&self) -> String {
+        let title = self.title.trim();
+        if !title.is_empty() {
+            return title.to_owned();
+        }
+        self.subtasks
+            .first()
+            .map(task_fallback_title)
+            .unwrap_or_else(|| "Untitled".to_owned())
+    }
+
+    pub fn derived_priority(&self) -> TodoPriority {
+        self.subtasks
+            .iter()
+            .map(|task| task.priority)
+            .max_by_key(|priority| priority.rank())
+            .unwrap_or(TodoPriority::Low)
+    }
+
+    pub fn child_index(&self, id: u64) -> Option<usize> {
+        self.subtasks
+            .iter()
+            .position(|task| task.id == id)
+            .map(|index| index + 1)
+    }
+
+    pub fn child_by_index(&self, index: usize) -> Option<&Task> {
+        index
+            .checked_sub(1)
+            .and_then(|index| self.subtasks.get(index))
+    }
+
     fn set_completed(&mut self, completed: bool) -> bool {
         let changed = self.task.completed != completed
             || self.subtasks.iter().any(|task| task.completed != completed);
@@ -149,6 +181,7 @@ pub enum StoreError {
     TooManySubtasks,
     LastSubtask,
     EmptyTodo,
+    ParentTitleOnly(u64),
     NotFound(u64),
     NotParent(u64),
     DataDirectoryUnavailable,
@@ -173,6 +206,10 @@ impl fmt::Display for StoreError {
             }
             Self::LastSubtask => write!(f, "a parent task must keep at least one subtask"),
             Self::EmptyTodo => write!(f, "task title and content cannot both be empty"),
+            Self::ParentTitleOnly(id) => write!(
+                f,
+                "parent task {id} only supports an optional title; edit a child task for content, completion result, or priority"
+            ),
             Self::NotFound(id) => write!(f, "task {id} was not found"),
             Self::NotParent(id) => write!(f, "task {id} is not a parent task"),
             Self::DataDirectoryUnavailable => {
@@ -258,8 +295,7 @@ impl TodoStore {
     }
 
     pub fn add(&mut self, title: String) -> Result<Todo, StoreError> {
-        let child_title = title.clone();
-        self.add_with_initial_subtask(title, child_title)
+        self.add_with_initial_subtask(String::new(), title)
     }
 
     pub fn add_with_initial_subtask(
@@ -269,7 +305,7 @@ impl TodoStore {
     ) -> Result<Todo, StoreError> {
         let _lock = self.lock_exclusive()?;
         self.reload_locked()?;
-        let title = normalize_title(title)?;
+        let title = normalize_optional_title(title)?;
         let initial_subtask_title = normalize_title(initial_subtask_title)?;
         let created_at_ms = now_ms();
         let parent_id = self.allocate_id();
@@ -319,7 +355,15 @@ impl TodoStore {
 
         for todo in &mut self.todos {
             if todo.id == id {
-                apply_task_update(&mut todo.task, title, content, completion_result, priority)?;
+                if content.is_some() || completion_result.is_some() || priority.is_some() {
+                    return Err(StoreError::ParentTitleOnly(id));
+                }
+                if let Some(title) = title {
+                    todo.task.title = title;
+                }
+                todo.task.content.clear();
+                todo.task.completion_result.clear();
+                todo.task.priority = TodoPriority::Low;
                 if let Some(completed) = completed {
                     todo.set_completed(completed);
                 }
@@ -645,6 +689,10 @@ fn needs_migration(todos: &[Todo]) -> bool {
             || todo.created_at_ms <= 0
             || todo.subtasks.is_empty()
             || !ids.insert(todo.id)
+            || !todo.content.is_empty()
+            || !todo.completion_result.is_empty()
+            || todo.priority != TodoPriority::Low
+            || should_clear_single_child_parent_title(todo)
         {
             return true;
         }
@@ -730,10 +778,67 @@ fn migrate_todos(path: &Path, todos: &mut [Todo]) -> Result<(), StoreError> {
                 task.created_at_ms = parent_created_at_ms;
             }
         }
+        normalize_parent_payload(todo);
         todo.sync_completed_from_subtasks();
     }
     persist_todos(path, todos)
 }
+fn should_clear_single_child_parent_title(todo: &Todo) -> bool {
+    if todo.subtasks.len() != 1 {
+        return false;
+    }
+    let parent = todo.title.trim();
+    let child = todo.subtasks[0].title.trim();
+    !parent.is_empty()
+        && (parent == child || matches!(parent, "New Project" | "新事项" | "New Task" | "新任务"))
+}
+
+fn normalize_parent_payload(todo: &mut Todo) {
+    let parent_content = std::mem::take(&mut todo.task.content);
+    let parent_result = std::mem::take(&mut todo.task.completion_result);
+    let parent_priority = std::mem::take(&mut todo.task.priority);
+    if let Some(first) = todo.subtasks.first_mut() {
+        merge_unique_text(&mut first.content, parent_content);
+        merge_unique_text(&mut first.completion_result, parent_result);
+        if parent_priority.rank() > first.priority.rank() {
+            first.priority = parent_priority;
+        }
+    }
+    if should_clear_single_child_parent_title(todo) {
+        todo.task.title.clear();
+    }
+    todo.task.priority = TodoPriority::Low;
+}
+
+fn merge_unique_text(target: &mut String, source: String) {
+    let source = source.trim();
+    if source.is_empty() {
+        return;
+    }
+    let target_trimmed = target.trim();
+    if target_trimmed.is_empty() {
+        *target = source.to_owned();
+    } else if target_trimmed != source
+        && !target_trimmed.contains(source)
+        && !source.contains(target_trimmed)
+    {
+        *target = format!("{source}\n\n{target_trimmed}");
+    }
+}
+
+fn task_fallback_title(task: &Task) -> String {
+    let title = task.title.trim();
+    if !title.is_empty() {
+        return title.to_owned();
+    }
+    task.content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("Untitled")
+        .to_owned()
+}
+
 fn persist_todos(path: &Path, todos: &[Todo]) -> Result<(), StoreError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -856,6 +961,86 @@ mod tests {
         assert_ne!(todo.id, todo.subtasks[0].id);
         assert_eq!(todo.subtasks[0].title, "First step");
         assert_eq!(todo.completion_state(), TodoCompletionState::Active);
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn add_creates_an_untitled_parent_backed_by_one_child() {
+        let path = test_path("untitled-parent");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let todo = store
+            .add("First task".to_owned())
+            .expect("todo should be added");
+        assert!(todo.title.is_empty());
+        assert!(todo.content.is_empty());
+        assert!(todo.completion_result.is_empty());
+        assert_eq!(todo.priority, TodoPriority::Low);
+        assert_eq!(todo.subtasks.len(), 1);
+        assert_eq!(todo.subtasks[0].title, "First task");
+        assert_eq!(todo.effective_title(), "First task");
+        assert_eq!(todo.child_index(todo.subtasks[0].id), Some(1));
+        assert_eq!(
+            todo.child_by_index(1).map(|task| task.id),
+            Some(todo.subtasks[0].id)
+        );
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn parent_supports_only_an_optional_title() {
+        let path = test_path("parent-title-only");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let todo = store
+            .add("First task".to_owned())
+            .expect("todo should be added");
+        store
+            .update(todo.id, Some("Release".to_owned()), None, None, None, None)
+            .expect("parent title should update");
+        assert_eq!(
+            store.todo(todo.id).expect("parent should exist").title,
+            "Release"
+        );
+        store
+            .update(todo.id, Some(String::new()), None, None, None, None)
+            .expect("parent title should clear");
+        assert!(store
+            .todo(todo.id)
+            .expect("parent should exist")
+            .title
+            .is_empty());
+        assert!(matches!(
+            store.update(
+                todo.id,
+                None,
+                Some("parent body".to_owned()),
+                None,
+                None,
+                None,
+            ),
+            Err(StoreError::ParentTitleOnly(id)) if id == todo.id
+        ));
+        assert!(matches!(
+            store.update(
+                todo.id,
+                None,
+                None,
+                Some("parent result".to_owned()),
+                None,
+                None,
+            ),
+            Err(StoreError::ParentTitleOnly(id)) if id == todo.id
+        ));
+        assert!(matches!(
+            store.update(
+                todo.id,
+                None,
+                None,
+                None,
+                Some(TodoPriority::High),
+                None,
+            ),
+            Err(StoreError::ParentTitleOnly(id)) if id == todo.id
+        ));
         fs::remove_file(path).expect("test data should be removable");
     }
 
@@ -1070,6 +1255,51 @@ mod tests {
         assert_eq!(store.list().len(), 2);
         assert_eq!(store.list()[0].subtasks.len(), 1);
         assert_ne!(store.list()[0].subtasks[0].id, added.id);
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn migration_moves_parent_payload_into_first_child() {
+        let path = test_path("parent-payload-migration");
+        fs::write(
+            &path,
+            r#"[{"id":1,"title":"Project","content":"Parent notes","completionResult":"Parent result","priority":"high","completed":false,"createdAtMs":10,"archived":false,"subtasks":[{"id":2,"title":"First task","content":"Child notes","completionResult":"Child result","priority":"low","completed":false,"createdAtMs":11}]}]"#,
+        )
+        .expect("legacy hierarchy should be written");
+        let store = TodoStore::load(path.clone()).expect("legacy hierarchy should migrate");
+        let todo = &store.list()[0];
+        assert_eq!(todo.title, "Project");
+        assert!(todo.content.is_empty());
+        assert!(todo.completion_result.is_empty());
+        assert_eq!(todo.priority, TodoPriority::Low);
+        assert_eq!(
+            todo.subtasks[0].content,
+            "Parent notes
+
+Child notes"
+        );
+        assert_eq!(
+            todo.subtasks[0].completion_result,
+            "Parent result
+
+Child result"
+        );
+        assert_eq!(todo.subtasks[0].priority, TodoPriority::High);
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn migration_clears_redundant_single_child_parent_title() {
+        let path = test_path("redundant-parent-title");
+        fs::write(
+            &path,
+            r#"[{"id":1,"title":"Same task","content":"","completed":false,"createdAtMs":10,"archived":false,"subtasks":[{"id":2,"title":"Same task","content":"Body","completed":false,"createdAtMs":11}]}]"#,
+        )
+        .expect("legacy hierarchy should be written");
+        let store = TodoStore::load(path.clone()).expect("legacy hierarchy should migrate");
+        let todo = &store.list()[0];
+        assert!(todo.title.is_empty());
+        assert_eq!(todo.effective_title(), "Same task");
         fs::remove_file(path).expect("test data should be removable");
     }
 

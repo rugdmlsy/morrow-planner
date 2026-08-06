@@ -75,6 +75,9 @@ struct TaskSummary {
     kind: TaskKind,
     parent_id: Option<u64>,
     id: u64,
+    selection_id: u64,
+    child_index: Option<usize>,
+    collapsed_single_child: bool,
     title: String,
     subtitle: String,
     completed: bool,
@@ -103,6 +106,10 @@ struct TaskDetail {
     task: Task,
     completion_state: TodoCompletionState,
     archived: bool,
+    title_only: bool,
+    effective_title: String,
+    title_inherited: bool,
+    subtask_count: usize,
     subtasks: Vec<TaskSummary>,
 }
 
@@ -371,16 +378,23 @@ fn task_detail(store: &TodoStore, id: u64) -> Option<TaskDetail> {
     if let Some(todo) = store.todo(id) {
         let mut task = todo.task.clone();
         task.completed = todo.is_completed();
+        task.priority = todo.derived_priority();
+        let inherited = task.title.trim().is_empty();
         return Some(TaskDetail {
             kind: TaskKind::Parent,
             parent_id: None,
             task,
             completion_state: todo.completion_state(),
             archived: todo.archived,
+            title_only: true,
+            effective_title: parent_display_title(todo),
+            title_inherited: inherited,
+            subtask_count: todo.subtasks.len(),
             subtasks: todo
                 .subtasks
                 .iter()
-                .map(|task| child_summary(task, todo.id, todo.archived))
+                .enumerate()
+                .map(|(index, task)| child_summary(task, todo.id, index + 1, todo.archived))
                 .collect(),
         });
     }
@@ -399,69 +413,103 @@ fn task_detail_from_record(record: TaskRecord, archived: bool) -> TaskDetail {
     } else {
         TodoCompletionState::Active
     };
+    let effective_title = summary_text(&record.task).0;
     TaskDetail {
         kind: record.kind,
         parent_id: record.parent_id,
         task: record.task,
         completion_state,
         archived,
+        title_only: false,
+        effective_title,
+        title_inherited: false,
+        subtask_count: 0,
         subtasks: Vec::new(),
     }
 }
 
 fn todo_summary(todo: &Todo) -> TodoSummary {
+    let subtasks = todo
+        .subtasks
+        .iter()
+        .enumerate()
+        .map(|(index, task)| child_summary(task, todo.id, index + 1, todo.archived))
+        .collect::<Vec<_>>();
+    let task = if subtasks.len() == 1 {
+        let child = &subtasks[0];
+        TaskSummary {
+            kind: TaskKind::Parent,
+            parent_id: None,
+            id: todo.id,
+            selection_id: child.id,
+            child_index: None,
+            collapsed_single_child: true,
+            title: child.title.clone(),
+            subtitle: child.subtitle.clone(),
+            completed: child.completed,
+            completion_state: child.completion_state,
+            priority: child.priority,
+            archived: todo.archived,
+            created_at_ms: child.created_at_ms,
+        }
+    } else {
+        TaskSummary {
+            kind: TaskKind::Parent,
+            parent_id: None,
+            id: todo.id,
+            selection_id: todo.id,
+            child_index: None,
+            collapsed_single_child: false,
+            title: parent_display_title(todo),
+            subtitle: String::new(),
+            completed: todo.is_completed(),
+            completion_state: todo.completion_state(),
+            priority: todo.derived_priority(),
+            archived: todo.archived,
+            created_at_ms: todo.created_at_ms,
+        }
+    };
     TodoSummary {
-        task: task_summary(
-            &todo.task,
-            TaskKind::Parent,
-            None,
-            todo.archived,
-            todo.completion_state(),
-        ),
-        subtask_count: todo.subtasks.len(),
+        task,
+        subtask_count: subtasks.len(),
         completed_subtask_count: todo.completed_subtask_count(),
-        subtasks: todo
-            .subtasks
-            .iter()
-            .map(|task| child_summary(task, todo.id, todo.archived))
-            .collect(),
+        subtasks,
     }
 }
 
-fn child_summary(task: &Task, parent_id: u64, archived: bool) -> TaskSummary {
-    task_summary(
-        task,
-        TaskKind::Subtask,
-        Some(parent_id),
-        archived,
-        if task.completed {
-            TodoCompletionState::Completed
-        } else {
-            TodoCompletionState::Active
-        },
-    )
-}
-
-fn task_summary(
-    task: &Task,
-    kind: TaskKind,
-    parent_id: Option<u64>,
-    archived: bool,
-    completion_state: TodoCompletionState,
-) -> TaskSummary {
+fn child_summary(task: &Task, parent_id: u64, child_index: usize, archived: bool) -> TaskSummary {
     let base = summary_text(task);
+    let completion_state = if task.completed {
+        TodoCompletionState::Completed
+    } else {
+        TodoCompletionState::Active
+    };
     TaskSummary {
-        kind,
-        parent_id,
+        kind: TaskKind::Subtask,
+        parent_id: Some(parent_id),
         id: task.id,
+        selection_id: task.id,
+        child_index: Some(child_index),
+        collapsed_single_child: false,
         title: base.0,
         subtitle: base.1,
-        completed: completion_state == TodoCompletionState::Completed,
+        completed: task.completed,
         completion_state,
         priority: task.priority,
         archived,
         created_at_ms: task.created_at_ms,
     }
+}
+
+fn parent_display_title(todo: &Todo) -> String {
+    let title = todo.title.trim();
+    if !title.is_empty() {
+        return truncate(title, 42);
+    }
+    todo.subtasks
+        .first()
+        .map(|task| summary_text(task).0)
+        .unwrap_or_else(|| "New Project".to_owned())
 }
 
 fn summary_text(task: &Task) -> (String, String) {
@@ -814,9 +862,11 @@ mod tests {
 
     #[test]
     fn child_summary_keeps_first_class_fields() {
-        let summary = child_summary(&task(), 1, false);
+        let summary = child_summary(&task(), 1, 1, false);
         assert_eq!(summary.kind, TaskKind::Subtask);
         assert_eq!(summary.parent_id, Some(1));
+        assert_eq!(summary.child_index, Some(1));
+        assert_eq!(summary.selection_id, 2);
         assert_eq!(summary.title, "Child");
         assert_eq!(summary.subtitle, "More detail");
         assert_eq!(summary.priority, TodoPriority::High);
@@ -824,14 +874,14 @@ mod tests {
     }
 
     #[test]
-    fn parent_summary_contains_child_summaries() {
+    fn one_child_parent_summary_collapses_into_child_content() {
         let todo = Todo {
             task: Task {
                 id: 1,
-                title: "Project".to_owned(),
+                title: "Ignored parent title".to_owned(),
                 content: String::new(),
                 completion_result: String::new(),
-                priority: TodoPriority::Medium,
+                priority: TodoPriority::Low,
                 completed: false,
                 created_at_ms: 100,
             },
@@ -841,7 +891,38 @@ mod tests {
         let summary = todo_summary(&todo);
         assert_eq!(summary.subtask_count, 1);
         assert_eq!(summary.subtasks[0].id, 2);
-        assert_eq!(summary.task.completion_state, TodoCompletionState::Active);
+        assert!(summary.task.collapsed_single_child);
+        assert_eq!(summary.task.id, 1);
+        assert_eq!(summary.task.selection_id, 2);
+        assert_eq!(summary.task.title, "Child");
+        assert_eq!(summary.task.subtitle, "More detail");
+        assert_eq!(summary.task.priority, TodoPriority::High);
+    }
+
+    #[test]
+    fn multi_child_parent_uses_optional_title_and_local_indexes() {
+        let mut second = task();
+        second.id = 3;
+        second.title = "Second".to_owned();
+        let todo = Todo {
+            task: Task {
+                id: 1,
+                title: String::new(),
+                content: String::new(),
+                completion_result: String::new(),
+                priority: TodoPriority::Low,
+                completed: false,
+                created_at_ms: 100,
+            },
+            archived: false,
+            subtasks: vec![task(), second],
+        };
+        let summary = todo_summary(&todo);
+        assert!(!summary.task.collapsed_single_child);
+        assert_eq!(summary.task.selection_id, 1);
+        assert_eq!(summary.task.title, "Child");
+        assert_eq!(summary.subtasks[0].child_index, Some(1));
+        assert_eq!(summary.subtasks[1].child_index, Some(2));
     }
 
     #[test]
