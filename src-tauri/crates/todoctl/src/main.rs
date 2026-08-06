@@ -1,5 +1,5 @@
 use std::{env, path::PathBuf, process::ExitCode};
-use todo_core::{default_data_file, TodoCompletionState, TodoPriority, TodoStore};
+use todo_core::{default_data_file, TaskKind, Todo, TodoCompletionState, TodoPriority, TodoStore};
 
 const HELP: &str = r#"todoctl — command-line control for Todo
 
@@ -8,31 +8,32 @@ Usage:
 
 Commands:
   list [all|active|completed|archived] [--json]
-                                         List tasks and their IDs
-  show <id> [--json]                    Show one task by ID
-  add <title>                            Add a task and print its ID
-  done <id>                              Mark a task completed
-  undo <id>                              Restore a task
-  archive <id>                           Archive a task
-  unarchive <id>                         Restore an archived task
-  edit <id> <title>                      Rename a task
-  content <id> <text>                    Update task content
+                                         List parent and child tasks with global IDs
+  show <id> [--json]                    Show any parent or child task by ID
+  add <title>                            Add a parent with one default child; print parent ID
+  done <id>                              Complete a parent or child task
+  undo <id>                              Restore a parent or child task
+  archive <id>                           Archive a parent task
+  unarchive <id>                         Restore an archived parent task
+  edit <id> <title>                      Rename a parent or child task
+  content <id> <text>                    Update Markdown content
   result <id> <text>                     Set the optional completion result
-  clear-result <id>                       Clear the completion result
-  priority <id> <low|medium|high>         Set task priority
-  subtask-list <id> [--json]             List subtasks and their IDs
-  subtask-add <id> <title>                Add a subtask and print its ID
-  subtask-done <id> <subtask-id>          Mark a subtask completed
-  subtask-undo <id> <subtask-id>          Restore a subtask
-  subtask-edit <id> <subtask-id> <title>  Rename a subtask
-  subtask-delete <id> <subtask-id>        Delete a subtask
-  delete <id>                            Delete a task
-  complete-all                           Complete every unarchived task
-  restore-all                            Restore every unarchived task
-  archive-completed                      Archive completed tasks
-  restore-archived                       Restore all archived tasks
-  clear-completed                        Delete completed unarchived tasks
-  clear-archived                         Delete all archived tasks
+  clear-result <id>                      Clear the completion result
+  priority <id> <low|medium|high>        Set task priority
+  subtask-list <parent-id> [--json]      List children of a parent
+  subtask-add <parent-id> <title>        Add a child task and print its global ID
+  subtask-done <parent-id> <child-id>    Mark a child completed
+  subtask-undo <parent-id> <child-id>    Restore a child
+  subtask-edit <parent-id> <child-id> <title>
+                                         Rename a child
+  subtask-delete <parent-id> <child-id>  Delete a child; one child must remain
+  delete <id>                            Delete a parent or child task
+  complete-all                           Complete every unarchived parent and child
+  restore-all                            Restore every unarchived parent and child
+  archive-completed                      Archive completed parent tasks
+  restore-archived                       Restore all archived parents
+  clear-completed                        Delete completed unarchived parents
+  clear-archived                         Delete all archived parents
   path                                   Print the data file path
   help                                   Show this help
 
@@ -59,7 +60,6 @@ fn run() -> Result<(), String> {
         print!("{HELP}");
         return Ok(());
     }
-
     if command == "path" {
         println!("{}", resolve_data_file(data_file)?.display());
         return Ok(());
@@ -122,40 +122,38 @@ fn run() -> Result<(), String> {
         }
         "subtask-list" => list_subtasks(&store, &args),
         "subtask-add" => {
-            let id = id_argument(&args, 1)?;
+            let parent_id = id_argument(&args, 1)?;
             let title = joined_argument(&args, 2, "subtask-add requires a title")?;
-            let todo = store
-                .add_subtask(id, title)
+            let record = store
+                .add_subtask(parent_id, title)
                 .map_err(|error| error.to_string())?;
-            let subtask = todo
-                .subtasks
-                .last()
-                .ok_or_else(|| "subtask was not created".to_owned())?;
-            println!("{}", subtask.id);
+            println!("{}", record.task.id);
             Ok(())
         }
-        "subtask-done" => update_subtask_completed(&mut store, &args, true),
-        "subtask-undo" => update_subtask_completed(&mut store, &args, false),
+        "subtask-done" => update_child_completed(&mut store, &args, true),
+        "subtask-undo" => update_child_completed(&mut store, &args, false),
         "subtask-edit" => {
-            let id = id_argument(&args, 1)?;
-            let subtask_id = subtask_id_argument(&args, 2)?;
+            let parent_id = id_argument(&args, 1)?;
+            let child_id = id_argument(&args, 2)?;
+            ensure_child_of(&store, parent_id, child_id)?;
             let title = joined_argument(&args, 3, "subtask-edit requires a title")?;
             store
-                .update_subtask(id, subtask_id, Some(title), None)
+                .update(child_id, Some(title), None, None, None, None)
                 .map_err(|error| error.to_string())?;
             Ok(())
         }
         "subtask-delete" => {
-            let id = id_argument(&args, 1)?;
-            let subtask_id = subtask_id_argument(&args, 2)?;
+            let parent_id = id_argument(&args, 1)?;
+            let child_id = id_argument(&args, 2)?;
+            ensure_child_of(&store, parent_id, child_id)?;
             store
-                .delete_subtask(id, subtask_id)
+                .delete_task(child_id)
                 .map_err(|error| error.to_string())?;
             Ok(())
         }
         "delete" | "rm" => {
             let id = id_argument(&args, 1)?;
-            store.delete(id).map_err(|error| error.to_string())?;
+            store.delete_task(id).map_err(|error| error.to_string())?;
             Ok(())
         }
         "complete-all" => {
@@ -172,32 +170,18 @@ fn run() -> Result<(), String> {
             println!("{changed}");
             Ok(())
         }
-        "archive-completed" => {
-            let changed = store
-                .archive_completed()
-                .map_err(|error| error.to_string())?;
-            println!("{changed}");
-            Ok(())
-        }
-        "restore-archived" => {
-            let changed = store
-                .restore_archived()
-                .map_err(|error| error.to_string())?;
-            println!("{changed}");
-            Ok(())
-        }
-        "clear-completed" => {
-            let removed = store.clear_completed().map_err(|error| error.to_string())?;
-            println!("{removed}");
-            Ok(())
-        }
-        "clear-archived" => {
-            let removed = store.clear_archived().map_err(|error| error.to_string())?;
-            println!("{removed}");
-            Ok(())
-        }
+        "archive-completed" => print_count(store.archive_completed()),
+        "restore-archived" => print_count(store.restore_archived()),
+        "clear-completed" => print_count(store.clear_completed()),
+        "clear-archived" => print_count(store.clear_archived()),
         unknown => Err(format!("unknown command '{unknown}'\n\n{HELP}")),
     }
+}
+
+fn print_count(result: Result<usize, todo_core::StoreError>) -> Result<(), String> {
+    let count = result.map_err(|error| error.to_string())?;
+    println!("{count}");
+    Ok(())
 }
 
 fn extract_data_file(args: &mut Vec<String>) -> Result<Option<PathBuf>, String> {
@@ -228,160 +212,176 @@ fn list(store: &TodoStore, args: &[String]) -> Result<(), String> {
         }
     }
 
-    let todos = store
-        .list()
-        .iter()
-        .filter(|todo| match filter {
-            "active" => !todo.archived && !todo.is_completed(),
-            "completed" => !todo.archived && todo.is_completed(),
-            "archived" => todo.archived,
-            _ => true,
-        })
-        .collect::<Vec<_>>();
-
+    let todos = filtered_todos(store, filter);
     if json {
         println!(
             "{}",
             serde_json::to_string(&todos).map_err(|error| error.to_string())?
         );
-    } else {
-        for todo in todos {
+        return Ok(());
+    }
+
+    for todo in &todos {
+        println!(
+            "{}\t{}\t{}\tparent\t{}",
+            todo.id,
+            if todo.archived {
+                "archived"
+            } else {
+                completion_state_name(todo.completion_state())
+            },
+            priority_name(todo.priority),
+            display_task(&todo.task)
+        );
+        for task in &todo.subtasks {
             println!(
-                "{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\tchild:{}\t{}",
+                task.id,
+                if task.completed { "done" } else { "todo" },
+                priority_name(task.priority),
                 todo.id,
-                if todo.archived {
-                    "archived"
-                } else {
-                    completion_state_name(todo.completion_state())
-                },
-                priority_name(todo.priority),
-                display_title(todo)
+                display_task(task)
             );
         }
     }
     Ok(())
 }
 
-fn show(store: &TodoStore, args: &[String]) -> Result<(), String> {
-    let id = id_argument(args, 1)?;
-    let mut json = false;
-    for arg in &args[2..] {
-        match arg.as_str() {
-            "--json" => json = true,
-            unknown => return Err(format!("unknown show option '{unknown}'")),
-        }
-    }
-
-    let todo = store
+fn filtered_todos(store: &TodoStore, filter: &str) -> Vec<Todo> {
+    store
         .list()
         .iter()
-        .find(|todo| todo.id == id)
+        .filter_map(|todo| {
+            let parent_matches = matches_parent_filter(todo, filter);
+            let mut visible = todo.clone();
+            visible
+                .subtasks
+                .retain(|task| matches_child_filter(todo, task.completed, filter));
+            (parent_matches || !visible.subtasks.is_empty()).then_some(visible)
+        })
+        .collect()
+}
+
+fn matches_parent_filter(todo: &Todo, filter: &str) -> bool {
+    match filter {
+        "active" => !todo.archived && !todo.is_completed(),
+        "completed" => !todo.archived && todo.is_completed(),
+        "archived" => todo.archived,
+        _ => true,
+    }
+}
+
+fn matches_child_filter(todo: &Todo, completed: bool, filter: &str) -> bool {
+    match filter {
+        "active" => !todo.archived && !completed,
+        "completed" => !todo.archived && completed,
+        "archived" => todo.archived,
+        _ => true,
+    }
+}
+
+fn show(store: &TodoStore, args: &[String]) -> Result<(), String> {
+    let id = id_argument(args, 1)?;
+    let json = match args.get(2).map(String::as_str) {
+        None => false,
+        Some("--json") => true,
+        Some(option) => return Err(format!("unknown show option '{option}'")),
+    };
+    let record = store
+        .task(id)
         .ok_or_else(|| format!("task {id} was not found"))?;
+    let parent = store.todo(id);
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string(todo).map_err(|error| error.to_string())?
-        );
+        if let Some(todo) = parent {
+            println!(
+                "{}",
+                serde_json::to_string(todo).map_err(|error| error.to_string())?
+            );
+        } else {
+            println!(
+                "{}",
+                serde_json::to_string(&record).map_err(|error| error.to_string())?
+            );
+        }
         return Ok(());
     }
 
-    println!("ID: {}", todo.id);
-    println!("Status: {}", completion_state_name(todo.completion_state()));
-    println!("Archived: {}", if todo.archived { "yes" } else { "no" });
-    println!("Priority: {}", priority_name(todo.priority));
-    println!("CreatedAtMs: {}", todo.created_at_ms);
-    println!("Title: {}", display_title(todo));
+    println!("ID: {}", record.task.id);
     println!(
-        "Content:
-{}",
-        todo.content
+        "Kind: {}",
+        match record.kind {
+            TaskKind::Parent => "parent",
+            TaskKind::Subtask => "child",
+        }
     );
+    if let Some(parent_id) = record.parent_id {
+        println!("ParentID: {parent_id}");
+    }
     println!(
-        "CompletionResult:
-{}",
-        todo.completion_result
+        "Status: {}",
+        parent
+            .map(|todo| completion_state_name(todo.completion_state()))
+            .unwrap_or(if record.task.completed {
+                "done"
+            } else {
+                "todo"
+            })
     );
-    println!(
-        "Subtasks: {}/{}",
-        todo.completed_subtask_count(),
-        todo.subtasks.len()
-    );
-    for subtask in &todo.subtasks {
+    if let Some(todo) = parent {
+        println!("Archived: {}", if todo.archived { "yes" } else { "no" });
+    }
+    println!("Priority: {}", priority_name(record.task.priority));
+    println!("CreatedAtMs: {}", record.task.created_at_ms);
+    println!("Title: {}", display_task(&record.task));
+    println!("Content:\n{}", record.task.content);
+    println!("CompletionResult:\n{}", record.task.completion_result);
+    if let Some(todo) = parent {
         println!(
-            "  {}	{}	{}",
-            subtask.id,
-            if subtask.completed { "done" } else { "todo" },
-            subtask.title
+            "Progress: {}/{} ({})",
+            todo.completed_subtask_count(),
+            todo.subtasks.len(),
+            completion_state_name(todo.completion_state())
         );
+        for task in &todo.subtasks {
+            println!(
+                "  {}\t{}\t{}\t{}",
+                task.id,
+                if task.completed { "done" } else { "todo" },
+                priority_name(task.priority),
+                display_task(task)
+            );
+        }
     }
     Ok(())
 }
 
-fn display_title(todo: &todo_core::Todo) -> String {
-    let title = todo.title.trim();
-    if !title.is_empty() {
-        return title.to_owned();
-    }
-
-    let content = todo
-        .content
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if content.is_empty() {
-        return "Untitled".to_owned();
-    }
-
-    let characters = content.chars().collect::<Vec<_>>();
-    if characters.len() > 48 {
-        format!("{}…", characters[..48].iter().collect::<String>())
-    } else {
-        content
-    }
-}
-
 fn list_subtasks(store: &TodoStore, args: &[String]) -> Result<(), String> {
-    let id = id_argument(args, 1)?;
+    let parent_id = id_argument(args, 1)?;
     let json = match args.get(2).map(String::as_str) {
         None => false,
         Some("--json") => true,
         Some(option) => return Err(format!("unknown subtask-list option '{option}'")),
     };
     let todo = store
-        .list()
-        .iter()
-        .find(|todo| todo.id == id)
-        .ok_or_else(|| format!("task {id} was not found"))?;
-
+        .todo(parent_id)
+        .ok_or_else(|| format!("parent task {parent_id} was not found"))?;
     if json {
         println!(
             "{}",
             serde_json::to_string(&todo.subtasks).map_err(|error| error.to_string())?
         );
     } else {
-        for subtask in &todo.subtasks {
+        for task in &todo.subtasks {
             println!(
-                "{}	{}	{}",
-                subtask.id,
-                if subtask.completed { "done" } else { "todo" },
-                subtask.title
+                "{}\t{}\t{}\t{}",
+                task.id,
+                if task.completed { "done" } else { "todo" },
+                priority_name(task.priority),
+                display_task(task)
             );
         }
     }
-    Ok(())
-}
-
-fn update_subtask_completed(
-    store: &mut TodoStore,
-    args: &[String],
-    completed: bool,
-) -> Result<(), String> {
-    let id = id_argument(args, 1)?;
-    let subtask_id = subtask_id_argument(args, 2)?;
-    store
-        .update_subtask(id, subtask_id, None, Some(completed))
-        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -393,15 +393,63 @@ fn update_completed(store: &mut TodoStore, args: &[String], completed: bool) -> 
     Ok(())
 }
 
+fn update_child_completed(
+    store: &mut TodoStore,
+    args: &[String],
+    completed: bool,
+) -> Result<(), String> {
+    let parent_id = id_argument(args, 1)?;
+    let child_id = id_argument(args, 2)?;
+    ensure_child_of(store, parent_id, child_id)?;
+    store
+        .update(child_id, None, None, None, None, Some(completed))
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn ensure_child_of(store: &TodoStore, parent_id: u64, child_id: u64) -> Result<(), String> {
+    let record = store
+        .task(child_id)
+        .ok_or_else(|| format!("task {child_id} was not found"))?;
+    if record.parent_id == Some(parent_id) {
+        Ok(())
+    } else {
+        Err(format!(
+            "task {child_id} is not a child of task {parent_id}"
+        ))
+    }
+}
+
 fn update_archived(store: &mut TodoStore, args: &[String], archived: bool) -> Result<(), String> {
     let id = id_argument(args, 1)?;
-    if !store.list().iter().any(|todo| todo.id == id) {
-        return Err(format!("task {id} was not found"));
+    if store.todo(id).is_none() {
+        return Err(format!("task {id} is not a parent task"));
     }
     store
         .set_archived_for_ids(&[id], archived)
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn display_task(task: &todo_core::Task) -> String {
+    let title = task.title.trim();
+    if !title.is_empty() {
+        return title.to_owned();
+    }
+    let content = task
+        .content
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if content.is_empty() {
+        return "Untitled".to_owned();
+    }
+    let characters = content.chars().collect::<Vec<_>>();
+    if characters.len() > 48 {
+        format!("{}…", characters[..48].iter().collect::<String>())
+    } else {
+        content
+    }
 }
 
 fn completion_state_name(state: TodoCompletionState) -> &'static str {
@@ -437,13 +485,6 @@ fn id_argument(args: &[String], index: usize) -> Result<u64, String> {
         .ok_or_else(|| "task id is required".to_owned())?
         .parse::<u64>()
         .map_err(|_| "task id must be a positive integer".to_owned())
-}
-
-fn subtask_id_argument(args: &[String], index: usize) -> Result<u64, String> {
-    args.get(index)
-        .ok_or_else(|| "subtask id is required".to_owned())?
-        .parse::<u64>()
-        .map_err(|_| "subtask id must be a positive integer".to_owned())
 }
 
 fn joined_argument(args: &[String], start: usize, error: &str) -> Result<String, String> {

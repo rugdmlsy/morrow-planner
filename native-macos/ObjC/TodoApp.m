@@ -375,7 +375,12 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
 @property NSTextField *titleLabel;
 @property NSTextField *subtitleLabel;
 @property NSTextField *priorityLabel;
-- (void)configure:(NSDictionary *)summary handler:(void (^)(BOOL))handler english:(BOOL)english;
+@property LiteButton *addButton;
+@property(nonatomic) BOOL childRow;
+- (void)configure:(NSDictionary *)summary
+          handler:(void (^)(BOOL completed))handler
+       addHandler:(nullable void (^)(void))addHandler
+          english:(BOOL)english;
 @end
 @implementation TaskCellView
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -386,7 +391,6 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
         _idLabel.textColor = NSColor.tertiaryLabelColor;
         _idLabel.lineBreakMode = NSLineBreakByClipping;
         _titleLabel = [NSTextField labelWithString:@""];
-        _titleLabel.font = [NSFont systemFontOfSize:13.5 weight:NSFontWeightSemibold];
         _titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
         _subtitleLabel = [NSTextField labelWithString:@""];
         _subtitleLabel.font = [NSFont systemFontOfSize:11.5];
@@ -395,31 +399,60 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
         _priorityLabel = [NSTextField labelWithString:@""];
         _priorityLabel.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold];
         _priorityLabel.alignment = NSTextAlignmentCenter;
-        [self addSubview:_check]; [self addSubview:_idLabel]; [self addSubview:_titleLabel]; [self addSubview:_subtitleLabel]; [self addSubview:_priorityLabel];
+        _addButton = [[LiteButton alloc] initWithTitle:@"+" style:LiteButtonStylePlain];
+        _addButton.accessibilityLabel = @"添加子任务";
+        [self addSubview:_check];
+        [self addSubview:_idLabel];
+        [self addSubview:_titleLabel];
+        [self addSubview:_subtitleLabel];
+        [self addSubview:_priorityLabel];
+        [self addSubview:_addButton];
     }
     return self;
 }
 - (void)layout {
     [super layout];
-    CGFloat h = NSHeight(self.bounds);
-    self.check.frame = NSMakeRect(10, (h - 20) / 2, 20, 20);
-    CGFloat x = 38, idWidth = 40, badgeWidth = 28, rightInset = 10;
-    CGFloat w = MAX(0, NSWidth(self.bounds) - x - rightInset);
-    self.priorityLabel.frame = NSMakeRect(NSWidth(self.bounds) - badgeWidth - rightInset, h / 2 + 3, badgeWidth, 19);
-    self.titleLabel.frame = NSMakeRect(x, h / 2 + 3, MAX(0, w - badgeWidth - 6), 19);
-    self.idLabel.frame = NSMakeRect(x, h / 2 - 17, idWidth, 17);
-    self.subtitleLabel.frame = NSMakeRect(x + idWidth, h / 2 - 17, MAX(0, w - idWidth), 17);
+    CGFloat height = NSHeight(self.bounds);
+    CGFloat indent = self.childRow ? 18.0 : 0.0;
+    self.check.frame = NSMakeRect(10 + indent, (height - 20) / 2, 20, 20);
+    CGFloat x = 38 + indent;
+    CGFloat idWidth = 40;
+    CGFloat rightInset = 8;
+    CGFloat addWidth = self.addButton.hidden ? 0 : 28;
+    CGFloat priorityWidth = 28;
+    CGFloat rightX = NSWidth(self.bounds) - rightInset;
+    if (!self.addButton.hidden) {
+        self.addButton.frame = NSMakeRect(rightX - addWidth, (height - 28) / 2, addWidth, 28);
+        rightX -= addWidth + 2;
+    } else {
+        self.addButton.frame = NSZeroRect;
+    }
+    self.priorityLabel.frame = NSMakeRect(rightX - priorityWidth, height / 2 + 3, priorityWidth, 19);
+    CGFloat textWidth = MAX(0, rightX - priorityWidth - 6 - x);
+    self.titleLabel.frame = NSMakeRect(x, height / 2 + 3, textWidth, 19);
+    self.idLabel.frame = NSMakeRect(x, height / 2 - 17, idWidth, 17);
+    self.subtitleLabel.frame = NSMakeRect(x + idWidth, height / 2 - 17, MAX(0, rightX - x - idWidth), 17);
 }
-- (void)configure:(NSDictionary *)summary handler:(void (^)(BOOL))handler english:(BOOL)english {
-    NSNumber *todoID = [summary[@"id"] isKindOfClass:NSNumber.class] ? summary[@"id"] : nil;
-    self.idLabel.stringValue = todoID ? [NSString stringWithFormat:@"#%@", todoID] : @"#?";
+- (void)configure:(NSDictionary *)summary
+          handler:(void (^)(BOOL completed))handler
+       addHandler:(void (^)(void))addHandler
+          english:(BOOL)english {
+    NSString *kind = [summary[@"kind"] isKindOfClass:NSString.class] ? summary[@"kind"] : @"parent";
+    self.childRow = [kind isEqualToString:@"subtask"];
+    NSNumber *taskID = [summary[@"id"] isKindOfClass:NSNumber.class] ? summary[@"id"] : nil;
+    self.idLabel.stringValue = taskID ? [NSString stringWithFormat:@"#%@", taskID] : @"#?";
     self.titleLabel.stringValue = summary[@"title"] ?: @"";
-    NSString *subtitle = summary[@"subtitle"] ?: @"";
-    NSInteger subtaskCount = [summary[@"subtaskCount"] integerValue];
-    NSInteger completedSubtaskCount = [summary[@"completedSubtaskCount"] integerValue];
-    self.subtitleLabel.stringValue = subtaskCount > 0
-        ? [NSString stringWithFormat:@"%ld/%ld · %@", (long)completedSubtaskCount, (long)subtaskCount, subtitle]
+    self.titleLabel.font = self.childRow
+        ? [NSFont systemFontOfSize:13 weight:NSFontWeightMedium]
+        : [NSFont systemFontOfSize:13.5 weight:NSFontWeightSemibold];
+    NSString *subtitle = [summary[@"subtitle"] isKindOfClass:NSString.class] ? summary[@"subtitle"] : @"";
+    if (!subtitle.length) subtitle = english ? @"No additional content" : @"暂无更多内容";
+    NSInteger childCount = [summary[@"subtaskCount"] integerValue];
+    NSInteger completedChildCount = [summary[@"completedSubtaskCount"] integerValue];
+    self.subtitleLabel.stringValue = !self.childRow && childCount > 0
+        ? [NSString stringWithFormat:@"%ld/%ld · %@", (long)completedChildCount, (long)childCount, subtitle]
         : subtitle;
+
     NSString *priority = [summary[@"priority"] isKindOfClass:NSString.class] ? summary[@"priority"] : @"low";
     if ([priority isEqualToString:@"high"]) {
         self.priorityLabel.stringValue = english ? @"H" : @"高";
@@ -431,6 +464,7 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
         self.priorityLabel.stringValue = english ? @"L" : @"低";
         self.priorityLabel.textColor = NSColor.tertiaryLabelColor;
     }
+
     NSString *completionState = [summary[@"completionState"] isKindOfClass:NSString.class]
         ? summary[@"completionState"]
         : ([summary[@"completed"] boolValue] ? @"completed" : @"active");
@@ -439,69 +473,21 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
         ? TodoCheckStatePartial
         : (completed ? TodoCheckStateCompleted : TodoCheckStateActive);
     self.check.changeHandler = handler;
+    self.check.accessibilityLabel = self.childRow
+        ? (english ? @"Complete child task" : @"完成子任务")
+        : (english ? @"Complete parent task" : @"完成大事项");
+
+    self.addButton.hidden = self.childRow;
+    self.addButton.handler = addHandler;
+    self.addButton.toolTip = english ? @"Add child task" : @"添加子任务";
+    self.addButton.accessibilityLabel = self.addButton.toolTip;
+
     self.idLabel.textColor = NSColor.tertiaryLabelColor;
     self.titleLabel.textColor = completed ? NSColor.tertiaryLabelColor : NSColor.labelColor;
     self.subtitleLabel.textColor = completed ? NSColor.tertiaryLabelColor : NSColor.secondaryLabelColor;
     if (completed) self.priorityLabel.textColor = NSColor.tertiaryLabelColor;
     self.accessibilityLabel = [NSString stringWithFormat:@"%@ %@", self.idLabel.stringValue, self.titleLabel.stringValue];
-}
-@end
-
-@interface SubtaskCellView : NSTableCellView <NSTextFieldDelegate>
-@property CheckControl *check;
-@property NSTextField *titleField;
-@property LiteButton *deleteButton;
-@property NSString *titleSnapshot;
-@property(nonatomic, copy, nullable) void (^editHandler)(NSString *title);
-@end
-@implementation SubtaskCellView
-- (instancetype)initWithFrame:(NSRect)frame {
-    if ((self = [super initWithFrame:frame])) {
-        _check = [[CheckControl alloc] initWithFrame:NSZeroRect];
-        _check.accessibilityLabel = @"完成子任务";
-        _titleField = [[NSTextField alloc] initWithFrame:NSZeroRect];
-        _titleField.bordered = NO;
-        _titleField.bezeled = NO;
-        _titleField.drawsBackground = NO;
-        _titleField.font = [NSFont systemFontOfSize:13];
-        _titleField.focusRingType = NSFocusRingTypeNone;
-        _titleField.lineBreakMode = NSLineBreakByTruncatingTail;
-        _titleField.delegate = self;
-        _deleteButton = [[LiteButton alloc] initWithTitle:@"×" style:LiteButtonStylePlain];
-        _deleteButton.toolTip = @"删除子任务";
-        [self addSubview:_check];
-        [self addSubview:_titleField];
-        [self addSubview:_deleteButton];
-    }
-    return self;
-}
-- (void)layout {
-    [super layout];
-    CGFloat height = NSHeight(self.bounds);
-    self.check.frame = NSMakeRect(12, (height - 20) / 2, 20, 20);
-    self.deleteButton.frame = NSMakeRect(NSWidth(self.bounds) - 34, (height - 28) / 2, 28, 28);
-    self.titleField.frame = NSMakeRect(40, (height - 22) / 2, MAX(40, NSWidth(self.bounds) - 80), 22);
-}
-- (void)configure:(NSDictionary *)subtask
-          english:(BOOL)english
-     toggleHandler:(void (^)(BOOL completed))toggleHandler
-       editHandler:(void (^)(NSString *title))editHandler
-     deleteHandler:(void (^)(void))deleteHandler {
-    NSString *title = [subtask[@"title"] isKindOfClass:NSString.class] ? subtask[@"title"] : @"";
-    BOOL completed = [subtask[@"completed"] boolValue];
-    self.titleSnapshot = title;
-    self.titleField.stringValue = title;
-    self.titleField.textColor = completed ? NSColor.tertiaryLabelColor : NSColor.labelColor;
-    self.check.checked = completed;
-    self.check.changeHandler = toggleHandler;
-    self.editHandler = editHandler;
-    self.deleteButton.handler = deleteHandler;
-    self.deleteButton.toolTip = english ? @"Delete subtask" : @"删除子任务";
-    self.accessibilityLabel = title;
-}
-- (void)controlTextDidEndEditing:(NSNotification *)notification {
-    NSString *title = [self.titleField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (![title isEqualToString:self.titleSnapshot] && self.editHandler) self.editHandler(title);
+    [self setNeedsLayout:YES];
 }
 @end
 
@@ -579,7 +565,7 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
     if ((self = [super initWithFrame:frame])) {
         _dateLabel = [NSTextField labelWithString:@""]; _dateLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold]; _dateLabel.textColor = NSColor.systemOrangeColor;
         _headingLabel = [NSTextField labelWithString:@"今天要做什么？"]; _headingLabel.font = [NSFont systemFontOfSize:24 weight:NSFontWeightBold];
-        _createTaskButton = [[LiteButton alloc] initWithTitle:@"新建任务" style:LiteButtonStyleBordered];
+        _createTaskButton = [[LiteButton alloc] initWithTitle:@"新建事项" style:LiteButtonStyleBordered];
         _languageControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"中", @"EN"]];
         _refreshButton = [[LiteButton alloc] initWithTitle:@"↻" style:LiteButtonStylePlain];
         _refreshButton.toolTip = @"刷新";
@@ -648,10 +634,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @property NSTextField *priorityLabel;
 @property LiteSegmentedControl *priorityControl;
 @property LiteButton *closeButton;
-@property NSTextField *subtaskSummaryLabel;
-@property LiteButton *addSubtaskButton;
-@property NSScrollView *subtaskScroll;
-@property NSTableView *subtaskTable;
 @property NSScrollView *editorScroll;
 @property NSTextView *editor;
 @property NSTextField *placeholder;
@@ -668,8 +650,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @property(nonatomic) BOOL resultExpanded;
 @property(nonatomic) CGFloat resultRatio;
 @property(nonatomic) TodoViewMode viewMode;
-@property(nonatomic) BOOL subtaskSectionVisible;
-@property(nonatomic) NSInteger subtaskCount;
 @end
 @implementation DetailView
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -682,27 +662,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         _priorityControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"低", @"中", @"高"]];
         _closeButton = [[LiteButton alloc] initWithTitle:@"关闭" style:LiteButtonStylePlain];
 
-        _subtaskSummaryLabel = [NSTextField labelWithString:@"子任务 0/0"];
-        _subtaskSummaryLabel.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
-        _subtaskSummaryLabel.textColor = NSColor.secondaryLabelColor;
-        _addSubtaskButton = [[LiteButton alloc] initWithTitle:@"添加子任务" style:LiteButtonStylePlain];
-        _subtaskTable = [[NSTableView alloc] initWithFrame:NSZeroRect];
-        NSTableColumn *subtaskColumn = [[NSTableColumn alloc] initWithIdentifier:@"subtask"];
-        [_subtaskTable addTableColumn:subtaskColumn];
-        _subtaskTable.headerView = nil;
-        _subtaskTable.rowHeight = 34;
-        _subtaskTable.intercellSpacing = NSMakeSize(0, 0);
-        _subtaskTable.backgroundColor = NSColor.clearColor;
-        _subtaskTable.selectionHighlightStyle = NSTableViewSelectionHighlightStyleNone;
-        _subtaskScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
-        _subtaskScroll.documentView = _subtaskTable;
-        _subtaskScroll.hasVerticalScroller = YES;
-        _subtaskScroll.autohidesScrollers = YES;
-        _subtaskScroll.drawsBackground = NO;
-        _subtaskScroll.borderType = NSNoBorder;
-        _subtaskSummaryLabel.hidden = YES;
-        _addSubtaskButton.hidden = YES;
-        _subtaskScroll.hidden = YES;
 
         _editor = [[NSTextView alloc] initWithFrame:NSZeroRect];
         _editor.richText = NO;
@@ -780,12 +739,9 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         _resultRatio = configuredRatio > 0.0 ? configuredRatio : 0.24;
         _resultExpanded = NO;
         _viewMode = TodoViewModeSplit;
-        _subtaskSectionVisible = NO;
-        _subtaskCount = 0;
 
         for (NSView *view in @[
-            _completeButton, _modeControl, _priorityLabel, _priorityControl, _closeButton,
-            _subtaskSummaryLabel, _addSubtaskButton, _subtaskScroll, _editorScroll, _placeholder,
+            _completeButton, _modeControl, _priorityLabel, _priorityControl, _closeButton, _editorScroll, _placeholder,
             _completionResultDisclosure, _completionResultScroll, _deleteButton, _saveStatus, _saveButton
         ]) {
             [self addSubview:view];
@@ -795,12 +751,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 }
 - (BOOL)isFlipped { return YES; }
 - (CGFloat)dividerThickness { return 1.0; }
-- (CGFloat)subtaskSectionHeight {
-    if (!self.subtaskSectionVisible) return 0.0;
-    CGFloat rowsHeight = MIN(136.0, MAX(0.0, self.subtaskCount * self.subtaskTable.rowHeight));
-    return 38.0 + rowsHeight;
-}
-- (CGFloat)contentTop { return 91.0 + [self subtaskSectionHeight]; }
+- (CGFloat)contentTop { return 91.0; }
 - (CGFloat)availableContentHeight {
     return MAX(0.0, NSHeight(self.bounds) - [self contentTop] - 53.0);
 }
@@ -851,19 +802,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.priorityLabel.frame = NSMakeRect(priorityGroupX, 58, priorityLabelSize.width, 18);
     self.priorityControl.frame = NSMakeRect(priorityGroupX + priorityLabelSize.width + 8.0, 52, prioritySize.width, 28);
 
-    if (self.subtaskSectionVisible) {
-        CGFloat sectionTop = 91.0;
-        self.subtaskSummaryLabel.frame = NSMakeRect(16, sectionTop + 10, MAX(100, width - 170), 18);
-        NSSize addSubtaskSize = self.addSubtaskButton.intrinsicContentSize;
-        self.addSubtaskButton.frame = NSMakeRect(width - addSubtaskSize.width - 12, sectionTop + 4, addSubtaskSize.width, 30);
-        CGFloat rowsHeight = MAX(0.0, [self subtaskSectionHeight] - 38.0);
-        self.subtaskScroll.frame = NSMakeRect(0, sectionTop + 38.0, width, rowsHeight);
-    } else {
-        self.subtaskSummaryLabel.frame = NSZeroRect;
-        self.addSubtaskButton.frame = NSZeroRect;
-        self.subtaskScroll.frame = NSZeroRect;
-    }
-
     CGFloat footerTop = MAX([self contentTop], height - 53.0);
     NSRect documentFrame;
     CGFloat disclosureHeight = 38.0;
@@ -912,20 +850,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     [self setNeedsLayout:YES];
     [self setNeedsDisplay:YES];
 }
-- (void)setSubtaskSectionVisible:(BOOL)subtaskSectionVisible {
-    _subtaskSectionVisible = subtaskSectionVisible;
-    self.subtaskSummaryLabel.hidden = !subtaskSectionVisible;
-    self.addSubtaskButton.hidden = !subtaskSectionVisible;
-    self.subtaskScroll.hidden = !subtaskSectionVisible || self.subtaskCount == 0;
-    [self setNeedsLayout:YES];
-    [self setNeedsDisplay:YES];
-}
-- (void)setSubtaskCount:(NSInteger)subtaskCount {
-    _subtaskCount = MAX(0, subtaskCount);
-    self.subtaskScroll.hidden = !self.subtaskSectionVisible || _subtaskCount == 0;
-    [self setNeedsLayout:YES];
-    [self setNeedsDisplay:YES];
-}
 - (NSRect)dividerHitRect {
     NSRect divider = [self dividerRect];
     if (NSIsEmptyRect(divider)) return NSZeroRect;
@@ -968,7 +892,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     NSRectFill(self.bounds);
     [NSColor.separatorColor setFill];
     CGFloat footerTop = MAX([self contentTop], NSHeight(self.bounds) - 53.0);
-    if (self.subtaskSectionVisible) NSRectFill(NSMakeRect(0, 90.0, NSWidth(self.bounds), 1));
     NSRectFill(NSMakeRect(0, [self contentTop] - 1.0, NSWidth(self.bounds), 1));
     if (self.resultExpanded) {
         NSRectFill([self dividerRect]);
@@ -996,6 +919,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @property DetailView *detail;
 @property NSArray<NSDictionary *> *summaries;
 @property NSArray<NSDictionary *> *filtered;
+@property NSArray<NSDictionary *> *rows;
 @property TodoLanguage language;
 @property TodoViewMode viewMode;
 @property TodoSortMode sortMode;
@@ -1005,6 +929,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @property(nullable) NSDate *createdFromDate;
 @property(nullable) NSDate *createdToExclusiveDate;
 @property(nullable) NSNumber *selectedID;
+@property(nullable) NSNumber *selectedParentID;
+@property BOOL selectedIsSubtask;
 @property(nullable) NSDictionary *currentTodo;
 @property NSString *editorSnapshot;
 @property NSString *completionResultSnapshot;
@@ -1018,13 +944,12 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 - (void)showFilterMenu;
 - (NSMenu *)buildFilterMenu;
 - (void)updateFilterMenuPresentation;
-- (void)addSubtask;
-- (void)updateSubtaskPresentation;
+- (void)addSubtaskToParentID:(NSNumber *)parentID;
 @end
 
 @implementation TodoController
 - (void)loadView {
-    self.summaries = @[]; self.filtered = @[]; self.editorSnapshot = @""; self.completionResultSnapshot = @"";
+    self.summaries = @[]; self.filtered = @[]; self.rows = @[]; self.editorSnapshot = @""; self.completionResultSnapshot = @"";
     self.resultExpansionOverrides = [NSMutableDictionary dictionary];
     NSString *savedLanguage = [NSUserDefaults.standardUserDefaults stringForKey:TodoLanguageDefaultsKey];
     NSString *benchmarkLanguage = NSProcessInfo.processInfo.environment[@"TODO_BENCHMARK_LANGUAGE"];
@@ -1042,7 +967,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.detail.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [self.split addArrangedSubview:self.sidebar]; [self.split addArrangedSubview:self.detail]; self.view = self.split;
     self.sidebar.tableView.delegate = self; self.sidebar.tableView.dataSource = self;
-    self.detail.subtaskTable.delegate = self; self.detail.subtaskTable.dataSource = self;
     __weak typeof(self) weakSelf = self;
     self.sidebar.createTaskButton.handler = ^{ [weakSelf addEditableTask]; };
     self.sidebar.languageControl.changeHandler = ^(NSInteger index) { [weakSelf changeLanguage:(TodoLanguage)index]; };
@@ -1054,7 +978,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.detail.completionResultDisclosure.handler = ^(BOOL expanded) { [weakSelf setCompletionResultExpanded:expanded remember:YES]; };
     self.detail.modeControl.changeHandler = ^(NSInteger index) { [weakSelf changeViewMode:index]; };
     self.detail.priorityControl.changeHandler = ^(NSInteger index) { [weakSelf changeCurrentPriority:(TodoPriority)index]; };
-    self.detail.addSubtaskButton.handler = ^{ [weakSelf addSubtask]; };
     self.detail.closeButton.handler = ^{ [weakSelf closeCurrent]; };
     self.detail.deleteButton.handler = ^{ [weakSelf deleteCurrent]; };
     self.detail.saveButton.handler = ^{ [weakSelf saveIfNeeded]; };
@@ -1126,7 +1049,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     BOOL available = self.currentTodo != nil;
     self.detail.viewMode = self.viewMode;
     self.detail.placeholder.hidden = available;
-    self.detail.subtaskSectionVisible = available;
     self.detail.completionResultDisclosure.hidden = !available;
     self.detail.completionResultDisclosure.enabled = available;
     self.detail.completionResultDisclosure.expanded = self.detail.resultExpanded;
@@ -1177,7 +1099,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.sidebar.dateLabel.stringValue = [dateFormatter stringFromDate:NSDate.date];
 
     self.sidebar.headingLabel.stringValue = TodoLocalized(self.language, @"今天要做什么？", @"Today's tasks");
-    self.sidebar.createTaskButton.title = TodoLocalized(self.language, @"新建任务", @"New Task");
+    self.sidebar.createTaskButton.title = TodoLocalized(self.language, @"新建事项", @"New Project");
     self.sidebar.refreshButton.toolTip = TodoLocalized(self.language, @"刷新任务（⌘R）", @"Refresh tasks (⌘R)");
     self.sidebar.refreshButton.accessibilityLabel = TodoLocalized(self.language, @"刷新任务", @"Refresh tasks");
     self.sidebar.filterMenuButton.accessibilityLabel = TodoLocalized(self.language, @"筛选和排序", @"Filter and sort");
@@ -1187,8 +1109,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.detail.priorityLabel.stringValue = TodoLocalized(self.language, @"优先级", @"Priority");
     self.detail.priorityControl.accessibilityLabel = TodoLocalized(self.language, @"任务优先级", @"Task priority");
     self.detail.priorityControl.labels = english ? @[@"Low", @"Medium", @"High"] : @[@"低", @"中", @"高"];
-    self.detail.addSubtaskButton.title = TodoLocalized(self.language, @"添加子任务", @"Add Subtask");
-    self.detail.addSubtaskButton.accessibilityLabel = TodoLocalized(self.language, @"添加子任务", @"Add subtask");
     self.detail.modeControl.labels = english ? @[@"Edit", @"Split", @"Preview"] : @[@"编辑", @"分栏", @"预览"];
     self.detail.modeControl.selectedIndex = self.viewMode;
     self.detail.closeButton.title = TodoLocalized(self.language, @"关闭", @"Close");
@@ -1198,7 +1118,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.detail.saveButton.title = TodoLocalized(self.language, @"保存", @"Save");
 
     [self updateCompletion];
-    [self updateSubtaskPresentation];
     [self updateFilterMenuPresentation];
     [self applyFilter];
     if (self.currentTodo) {
@@ -1213,56 +1132,40 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 }
 - (CGFloat)splitView:(NSSplitView *)splitView constrainMinCoordinate:(CGFloat)proposedMinimumPosition ofSubviewAt:(NSInteger)dividerIndex { return 280; }
 - (CGFloat)splitView:(NSSplitView *)splitView constrainMaxCoordinate:(CGFloat)proposedMaximumPosition ofSubviewAt:(NSInteger)dividerIndex { return MIN(380, NSWidth(splitView.bounds)-440); }
-- (NSArray<NSDictionary *> *)currentSubtasks {
-    id value = self.currentTodo[@"subtasks"];
-    return [value isKindOfClass:NSArray.class] ? value : @[];
-}
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
-    return tableView == self.detail.subtaskTable ? self.currentSubtasks.count : self.filtered.count;
+    return self.rows.count;
 }
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
-    if (tableView == self.detail.subtaskTable) {
-        NSArray<NSDictionary *> *subtasks = self.currentSubtasks;
-        if (row < 0 || row >= subtasks.count) return nil;
-        NSDictionary *subtask = subtasks[row];
-        SubtaskCellView *cell = [tableView makeViewWithIdentifier:@"SubtaskCell" owner:self];
-        if (!cell) {
-            cell = [[SubtaskCellView alloc] initWithFrame:NSZeroRect];
-            cell.identifier = @"SubtaskCell";
-        }
-        NSNumber *subtaskID = subtask[@"id"];
-        __weak typeof(self) weakSelf = self;
-        [cell configure:subtask
-                english:(self.language == TodoLanguageEnglish)
-           toggleHandler:^(BOOL completed) { [weakSelf toggleSubtaskID:subtaskID completed:completed]; }
-             editHandler:^(NSString *title) { [weakSelf renameSubtaskID:subtaskID title:title]; }
-           deleteHandler:^{ [weakSelf deleteSubtaskID:subtaskID]; }];
-        return cell;
-    }
-
-    if (row < 0 || row >= self.filtered.count) return nil;
-    NSDictionary *summary = self.filtered[row];
+    if (row < 0 || row >= self.rows.count) return nil;
+    NSDictionary *summary = self.rows[row];
     TaskCellView *cell = [tableView makeViewWithIdentifier:@"TaskCell" owner:self];
     if (!cell) {
         cell = [[TaskCellView alloc] initWithFrame:NSZeroRect];
         cell.identifier = @"TaskCell";
     }
-    NSNumber *todoID = summary[@"id"];
+    NSNumber *taskID = summary[@"id"];
+    NSNumber *parentID = summary[@"parentId"];
+    BOOL child = [summary[@"kind"] isEqualToString:@"subtask"];
     __weak typeof(self) weakSelf = self;
-    [cell configure:summary handler:^(BOOL completed) { [weakSelf toggleID:todoID completed:completed]; } english:(self.language == TodoLanguageEnglish)];
+    [cell configure:summary
+            handler:^(BOOL completed) { [weakSelf toggleID:taskID completed:completed]; }
+         addHandler:(child ? nil : ^{ [weakSelf addSubtaskToParentID:taskID]; })
+            english:(self.language == TodoLanguageEnglish)];
+    if (child && parentID) {
+        cell.accessibilityHelp = [NSString stringWithFormat:TodoLocalized(self.language, @"属于大事项 #%@", @"Child of parent #%@"), parentID];
+    }
     return cell;
 }
 - (void)tableViewSelectionDidChange:(NSNotification *)notification {
-    if (notification.object != self.sidebar.tableView) return;
     NSInteger row = self.sidebar.tableView.selectedRow;
-    if (row < 0 || row >= self.filtered.count) return;
-    NSNumber *todoID = self.filtered[row][@"id"];
-    if ([todoID isEqual:self.selectedID]) return;
+    if (row < 0 || row >= self.rows.count) return;
+    NSNumber *taskID = self.rows[row][@"id"];
+    if ([taskID isEqual:self.selectedID]) return;
     if (![self saveIfNeeded]) {
         [self updateSelection];
         return;
     }
-    [self selectID:todoID];
+    [self selectID:taskID];
 }
 - (void)reloadSummaries {
     NSError *error = nil; id value = BridgeCall(@{@"command":@"list"}, &error); if (!value) { [self showError:error]; return; }
@@ -1390,6 +1293,13 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     [self applyFilter];
 }
 
+- (NSNumber *)currentParentID {
+    return self.selectedIsSubtask ? self.selectedParentID : self.selectedID;
+}
+- (NSDictionary *)currentParentSummary {
+    NSNumber *parentID = [self currentParentID];
+    return parentID ? [self parentSummaryForTaskID:parentID] : nil;
+}
 - (void)showManagementMenu {
     NSInteger completedCount = 0;
     NSInteger archivedCount = 0;
@@ -1398,7 +1308,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         else if ([summary[@"completed"] boolValue]) completedCount++;
     }
 
-    BOOL currentArchived = [self.currentTodo[@"archived"] boolValue];
+    BOOL currentArchived = [[[self currentParentSummary] objectForKey:@"archived"] boolValue];
     NSMenu *menu = [NSMenu new];
     menu.autoenablesItems = NO;
 
@@ -1412,9 +1322,16 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 
     [menu addItem:NSMenuItem.separatorItem];
 
-    NSString *currentTitle = self.archiveView
-        ? TodoLocalized(self.language, @"恢复当前任务", @"Restore Current Task")
-        : TodoLocalized(self.language, @"归档当前任务", @"Archive Current Task");
+    NSString *currentTitle;
+    if (self.selectedIsSubtask) {
+        currentTitle = self.archiveView
+            ? TodoLocalized(self.language, @"恢复所属事项", @"Restore Parent Project")
+            : TodoLocalized(self.language, @"归档所属事项", @"Archive Parent Project");
+    } else {
+        currentTitle = self.archiveView
+            ? TodoLocalized(self.language, @"恢复当前事项", @"Restore Current Project")
+            : TodoLocalized(self.language, @"归档当前事项", @"Archive Current Project");
+    }
     NSMenuItem *currentItem = [menu addItemWithTitle:currentTitle action:@selector(toggleArchiveCurrent:) keyEquivalent:@""];
     currentItem.target = self;
     currentItem.enabled = self.currentTodo != nil && currentArchived == self.archiveView;
@@ -1458,7 +1375,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 - (void)toggleArchiveView:(id)sender {
     if (![self saveIfNeeded]) return;
     self.archiveView = !self.archiveView;
-    if (self.currentTodo && [self.currentTodo[@"archived"] boolValue] != self.archiveView) {
+    NSDictionary *parent = [self currentParentSummary];
+    if (parent && [parent[@"archived"] boolValue] != self.archiveView) {
         self.selectedID = nil;
         [self clearCurrent];
     }
@@ -1472,7 +1390,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         [self showError:error];
         return NO;
     }
-    if (self.selectedID && [todoIDs containsObject:self.selectedID]) {
+    NSNumber *currentParentID = [self currentParentID];
+    if (currentParentID && [todoIDs containsObject:currentParentID]) {
         self.selectedID = nil;
         [self clearCurrent];
     }
@@ -1480,8 +1399,9 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     return YES;
 }
 - (void)toggleArchiveCurrent:(id)sender {
-    if (!self.selectedID) return;
-    [self setArchivedForIDs:@[self.selectedID] archived:!self.archiveView];
+    NSNumber *parentID = [self currentParentID];
+    if (!parentID) return;
+    [self setArchivedForIDs:@[parentID] archived:!self.archiveView];
 }
 - (void)toggleArchiveVisible:(id)sender {
     NSMutableArray<NSNumber *> *todoIDs = [NSMutableArray arrayWithCapacity:self.filtered.count];
@@ -1493,7 +1413,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 }
 - (void)archiveCompletedFromMenu:(id)sender {
     if (![self saveIfNeeded]) return;
-    BOOL selectedMoves = self.currentTodo && ![self.currentTodo[@"archived"] boolValue] && [self.currentTodo[@"completed"] boolValue];
+    NSDictionary *selectedParent = [self currentParentSummary];
+    BOOL selectedMoves = selectedParent && ![selectedParent[@"archived"] boolValue] && [selectedParent[@"completed"] boolValue];
     NSError *error = nil;
     if (!BridgeCall(@{@"command": @"archiveCompleted"}, &error)) {
         [self showError:error];
@@ -1507,7 +1428,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 }
 - (void)restoreAllArchivedFromMenu:(id)sender {
     if (![self saveIfNeeded]) return;
-    BOOL selectedMoves = [self.currentTodo[@"archived"] boolValue];
+    BOOL selectedMoves = [[[self currentParentSummary] objectForKey:@"archived"] boolValue];
     NSError *error = nil;
     if (!BridgeCall(@{@"command": @"restoreArchived"}, &error)) {
         [self showError:error];
@@ -1530,7 +1451,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 }
 - (void)performClearCompleted {
     if (![self saveIfNeeded]) return;
-    BOOL selectedDeleted = self.currentTodo && ![self.currentTodo[@"archived"] boolValue] && [self.currentTodo[@"completed"] boolValue];
+    NSDictionary *selectedParent = [self currentParentSummary];
+    BOOL selectedDeleted = selectedParent && ![selectedParent[@"archived"] boolValue] && [selectedParent[@"completed"] boolValue];
     NSError *error = nil;
     if (!BridgeCall(@{@"command": @"clearCompleted"}, &error)) {
         [self showError:error];
@@ -1554,7 +1476,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 }
 - (void)performClearArchived {
     if (![self saveIfNeeded]) return;
-    BOOL selectedDeleted = [self.currentTodo[@"archived"] boolValue];
+    BOOL selectedDeleted = [[[self currentParentSummary] objectForKey:@"archived"] boolValue];
     NSError *error = nil;
     if (!BridgeCall(@{@"command": @"clearArchived"}, &error)) {
         [self showError:error];
@@ -1597,15 +1519,13 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     BOOL toIsExclusive = self.dateFilterMode == TodoDateFilterModeCustom;
     double fromMs = hasFrom ? effectiveFrom.timeIntervalSince1970 * 1000.0 : 0;
     double toMs = hasTo ? effectiveTo.timeIntervalSince1970 * 1000.0 : 0;
-
     BOOL archiveView = self.archiveView;
-    NSPredicate *predicate = [NSPredicate predicateWithBlock:^BOOL(NSDictionary *summary, NSDictionary *bindings) {
-        BOOL archived = [summary[@"archived"] boolValue];
-        if (archived != archiveView) return NO;
+
+    BOOL (^matches)(NSDictionary *) = ^BOOL(NSDictionary *summary) {
+        if ([summary[@"archived"] boolValue] != archiveView) return NO;
         BOOL completed = [summary[@"completed"] boolValue];
         if (statusFilter == 1 && completed) return NO;
         if (statusFilter == 2 && !completed) return NO;
-
         if (hasFrom || hasTo) {
             id timestampValue = summary[@"createdAtMs"];
             if (![timestampValue isKindOfClass:NSNumber.class]) return NO;
@@ -1614,58 +1534,96 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
             if (hasTo && (toIsExclusive ? createdAtMs >= toMs : createdAtMs > toMs)) return NO;
         }
         return YES;
-    }];
+    };
 
-    NSArray<NSDictionary *> *filtered = [self.summaries filteredArrayUsingPredicate:predicate];
-    if (self.sortMode != TodoSortModeOriginal) {
-        TodoSortMode sortMode = self.sortMode;
-        filtered = [filtered sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
-            if (sortMode == TodoSortModePriorityFirst) {
-                TodoPriority leftPriority = TodoPriorityFromValue(left[@"priority"]);
-                TodoPriority rightPriority = TodoPriorityFromValue(right[@"priority"]);
-                if (leftPriority != rightPriority) {
-                    return leftPriority > rightPriority ? NSOrderedAscending : NSOrderedDescending;
-                }
+    TodoSortMode sortMode = self.sortMode;
+    NSComparator comparator = ^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+        if (sortMode == TodoSortModePriorityFirst) {
+            TodoPriority leftPriority = TodoPriorityFromValue(left[@"priority"]);
+            TodoPriority rightPriority = TodoPriorityFromValue(right[@"priority"]);
+            if (leftPriority != rightPriority) {
+                return leftPriority > rightPriority ? NSOrderedAscending : NSOrderedDescending;
             }
+        }
+        NSNumber *leftTimestamp = [left[@"createdAtMs"] isKindOfClass:NSNumber.class] ? left[@"createdAtMs"] : @0;
+        NSNumber *rightTimestamp = [right[@"createdAtMs"] isKindOfClass:NSNumber.class] ? right[@"createdAtMs"] : @0;
+        NSComparisonResult timestampOrder = [rightTimestamp compare:leftTimestamp];
+        if (timestampOrder != NSOrderedSame) return timestampOrder;
+        NSNumber *leftID = [left[@"id"] isKindOfClass:NSNumber.class] ? left[@"id"] : @0;
+        NSNumber *rightID = [right[@"id"] isKindOfClass:NSNumber.class] ? right[@"id"] : @0;
+        return [rightID compare:leftID];
+    };
 
-            NSNumber *leftTimestamp = [left[@"createdAtMs"] isKindOfClass:NSNumber.class] ? left[@"createdAtMs"] : @0;
-            NSNumber *rightTimestamp = [right[@"createdAtMs"] isKindOfClass:NSNumber.class] ? right[@"createdAtMs"] : @0;
-            NSComparisonResult timestampOrder = [rightTimestamp compare:leftTimestamp];
-            if (timestampOrder != NSOrderedSame) return timestampOrder;
-
-            NSNumber *leftID = [left[@"id"] isKindOfClass:NSNumber.class] ? left[@"id"] : @0;
-            NSNumber *rightID = [right[@"id"] isKindOfClass:NSNumber.class] ? right[@"id"] : @0;
-            return [rightID compare:leftID];
+    NSMutableArray<NSDictionary *> *groups = [NSMutableArray array];
+    for (NSDictionary *parent in self.summaries) {
+        NSArray<NSDictionary *> *children = [parent[@"subtasks"] isKindOfClass:NSArray.class] ? parent[@"subtasks"] : @[];
+        NSMutableArray<NSDictionary *> *visibleChildren = [NSMutableArray array];
+        for (NSDictionary *child in children) {
+            if (matches(child)) [visibleChildren addObject:child];
+        }
+        if (!matches(parent) && visibleChildren.count == 0) continue;
+        NSArray<NSDictionary *> *orderedChildren = visibleChildren;
+        if (sortMode != TodoSortModeOriginal) {
+            orderedChildren = [visibleChildren sortedArrayUsingComparator:comparator];
+        }
+        [groups addObject:@{@"parent": parent, @"children": orderedChildren}];
+    }
+    if (sortMode != TodoSortModeOriginal) {
+        [groups sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+            return comparator(left[@"parent"], right[@"parent"]);
         }];
     }
-    self.filtered = filtered;
-    NSInteger active = 0;
-    NSInteger currentCount = 0;
-    NSInteger archivedCount = 0;
-    for (NSDictionary *summary in self.summaries) {
-        if ([summary[@"archived"] boolValue]) {
-            archivedCount++;
-        } else {
-            currentCount++;
-            if (![summary[@"completed"] boolValue]) active++;
+
+    NSMutableArray<NSDictionary *> *filteredParents = [NSMutableArray arrayWithCapacity:groups.count];
+    NSMutableArray<NSDictionary *> *rows = [NSMutableArray array];
+    for (NSDictionary *group in groups) {
+        NSDictionary *parent = group[@"parent"];
+        [filteredParents addObject:parent];
+        [rows addObject:parent];
+        [rows addObjectsFromArray:group[@"children"]];
+    }
+    self.filtered = filteredParents;
+    self.rows = rows;
+
+    NSInteger activeNodes = 0;
+    NSInteger currentNodes = 0;
+    NSInteger archivedNodes = 0;
+    NSInteger currentParents = 0;
+    BOOL allParentsCompleted = YES;
+    for (NSDictionary *parent in self.summaries) {
+        BOOL archived = [parent[@"archived"] boolValue];
+        NSArray<NSDictionary *> *children = [parent[@"subtasks"] isKindOfClass:NSArray.class] ? parent[@"subtasks"] : @[];
+        NSInteger nodeCount = 1 + children.count;
+        if (archived) {
+            archivedNodes += nodeCount;
+            continue;
+        }
+        currentParents++;
+        currentNodes += nodeCount;
+        if (![parent[@"completed"] boolValue]) {
+            activeNodes++;
+            allParentsCompleted = NO;
+        }
+        for (NSDictionary *child in children) {
+            if (![child[@"completed"] boolValue]) activeNodes++;
         }
     }
 
     if (self.archiveView) {
         self.sidebar.countLabel.stringValue = self.language == TodoLanguageEnglish
-            ? [NSString stringWithFormat:@"%ld shown · %ld archived", (long)self.filtered.count, (long)archivedCount]
-            : [NSString stringWithFormat:@"%ld 项显示 · %ld 项归档", (long)self.filtered.count, (long)archivedCount];
-    } else if (self.dateFilterMode != TodoDateFilterModeAll) {
+            ? [NSString stringWithFormat:@"%ld shown · %ld archived tasks", (long)self.rows.count, (long)archivedNodes]
+            : [NSString stringWithFormat:@"%ld 项显示 · %ld 项归档任务", (long)self.rows.count, (long)archivedNodes];
+    } else if (self.dateFilterMode != TodoDateFilterModeAll || self.filterIndex != 0) {
         self.sidebar.countLabel.stringValue = self.language == TodoLanguageEnglish
-            ? [NSString stringWithFormat:@"%ld shown · %ld tasks", (long)self.filtered.count, (long)currentCount]
-            : [NSString stringWithFormat:@"%ld 项显示 · %ld 项任务", (long)self.filtered.count, (long)currentCount];
+            ? [NSString stringWithFormat:@"%ld shown · %ld tasks", (long)self.rows.count, (long)currentNodes]
+            : [NSString stringWithFormat:@"%ld 项显示 · %ld 项任务", (long)self.rows.count, (long)currentNodes];
     } else {
         self.sidebar.countLabel.stringValue = self.language == TodoLanguageEnglish
-            ? [NSString stringWithFormat:@"%ld active · %ld tasks", (long)active, (long)currentCount]
-            : [NSString stringWithFormat:@"%ld 项待办 · %ld 项任务", (long)active, (long)currentCount];
+            ? [NSString stringWithFormat:@"%ld active · %ld tasks", (long)activeNodes, (long)currentNodes]
+            : [NSString stringWithFormat:@"%ld 项待办 · %ld 项任务", (long)activeNodes, (long)currentNodes];
     }
     self.sidebar.toggleAllButton.hidden = self.archiveView;
-    self.sidebar.toggleAllButton.title = active == 0 && currentCount > 0
+    self.sidebar.toggleAllButton.title = allParentsCompleted && currentParents > 0
         ? TodoLocalized(self.language, @"全部恢复", @"Restore All")
         : TodoLocalized(self.language, @"全部完成", @"Complete All");
     [self.sidebar.tableView reloadData];
@@ -1757,8 +1715,39 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         [strongSelf applyFilter];
     }];
 }
-- (NSDictionary *)summaryForID:(NSNumber *)todoID { for (NSDictionary *s in self.summaries) if ([s[@"id"] isEqual:todoID]) return s; return nil; }
-- (void)updateSelection { NSInteger row = NSNotFound; if (self.selectedID) for (NSInteger i=0;i<self.filtered.count;i++) if ([self.filtered[i][@"id"] isEqual:self.selectedID]) { row=i; break; } if (row==NSNotFound) [self.sidebar.tableView deselectAll:nil]; else { [self.sidebar.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:row] byExtendingSelection:NO]; [self.sidebar.tableView scrollRowToVisible:row]; } }
+- (NSDictionary *)summaryForID:(NSNumber *)taskID {
+    for (NSDictionary *parent in self.summaries) {
+        if ([parent[@"id"] isEqual:taskID]) return parent;
+        NSArray<NSDictionary *> *children = [parent[@"subtasks"] isKindOfClass:NSArray.class] ? parent[@"subtasks"] : @[];
+        for (NSDictionary *child in children) if ([child[@"id"] isEqual:taskID]) return child;
+    }
+    return nil;
+}
+- (NSDictionary *)parentSummaryForTaskID:(NSNumber *)taskID {
+    for (NSDictionary *parent in self.summaries) {
+        if ([parent[@"id"] isEqual:taskID]) return parent;
+        NSArray<NSDictionary *> *children = [parent[@"subtasks"] isKindOfClass:NSArray.class] ? parent[@"subtasks"] : @[];
+        for (NSDictionary *child in children) if ([child[@"id"] isEqual:taskID]) return parent;
+    }
+    return nil;
+}
+- (void)updateSelection {
+    NSInteger row = NSNotFound;
+    if (self.selectedID) {
+        for (NSInteger index = 0; index < self.rows.count; index++) {
+            if ([self.rows[index][@"id"] isEqual:self.selectedID]) {
+                row = index;
+                break;
+            }
+        }
+    }
+    if (row == NSNotFound) {
+        [self.sidebar.tableView deselectAll:nil];
+    } else {
+        [self.sidebar.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:row] byExtendingSelection:NO];
+        [self.sidebar.tableView scrollRowToVisible:row];
+    }
+}
 - (void)selectID:(NSNumber *)todoID {
     NSError *error = nil;
     NSDictionary *todo = BridgeCall(@{@"command": @"get", @"id": todoID}, &error);
@@ -1770,6 +1759,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 
     self.selectedID = todoID;
     self.currentTodo = todo;
+    self.selectedIsSubtask = [todo[@"kind"] isEqualToString:@"subtask"];
+    self.selectedParentID = self.selectedIsSubtask && [todo[@"parentId"] isKindOfClass:NSNumber.class] ? todo[@"parentId"] : nil;
     [self releasePreview];
 
     NSString *document = [self documentText:todo];
@@ -1789,7 +1780,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.detail.modeControl.selectedIndex = self.viewMode;
     self.detail.priorityControl.selectedIndex = TodoPriorityFromValue(todo[@"priority"]);
     [self updateCompletion];
-    [self updateSubtaskPresentation];
     [self setDocumentAvailable:YES];
     [self setSaveStatus:TodoLocalized(self.language, @"已保存", @"Saved") error:NO];
     [self updateSelection];
@@ -1818,7 +1808,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.detail.completeButton.enabled = available;
     self.detail.modeControl.enabled = available;
     self.detail.priorityControl.enabled = available;
-    self.detail.addSubtaskButton.enabled = available;
     self.detail.closeButton.enabled = available;
     self.detail.deleteButton.enabled = available;
     self.detail.saveButton.enabled = available;
@@ -1832,13 +1821,12 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.previewTimer = nil;
     [self releasePreview];
     self.currentTodo = nil;
+    self.selectedParentID = nil;
+    self.selectedIsSubtask = NO;
     self.suppressTextChanges = YES;
     self.detail.editor.string = @"";
     self.detail.completionResultEditor.string = @"";
     self.detail.priorityControl.selectedIndex = TodoPriorityLow;
-    self.detail.subtaskCount = 0;
-    self.detail.subtaskSummaryLabel.stringValue = @"";
-    [self.detail.subtaskTable reloadData];
     self.suppressTextChanges = NO;
     self.editorSnapshot = @"";
     self.completionResultSnapshot = @"";
@@ -1916,123 +1904,47 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     if (![self saveIfNeeded]) return;
     self.archiveView = NO;
     NSError *error = nil;
-    NSDictionary *summary = BridgeCall(@{@"command": @"add", @"title": TodoLocalized(self.language, @"新任务", @"New Task")}, &error);
+    NSDictionary *summary = BridgeCall(@{
+        @"command": @"add",
+        @"title": TodoLocalized(self.language, @"新事项", @"New Project"),
+        @"initialSubtaskTitle": TodoLocalized(self.language, @"新任务", @"New Task"),
+    }, &error);
     if (!summary) {
         [self showError:error];
         return;
     }
     [self reloadSummaries];
-    [self selectID:summary[@"id"]];
+    NSArray<NSDictionary *> *children = [summary[@"subtasks"] isKindOfClass:NSArray.class] ? summary[@"subtasks"] : @[];
+    NSNumber *taskID = children.firstObject[@"id"] ?: summary[@"id"];
+    [self selectID:taskID];
+    if (self.viewMode != TodoViewModePreview) {
+        [self.detail.editor setSelectedRange:NSMakeRange(0, self.detail.editor.string.length)];
+        [self.view.window makeFirstResponder:self.detail.editor];
+    }
+}
+- (void)addSubtaskToParentID:(NSNumber *)parentID {
+    if (!parentID || ![self saveIfNeeded]) return;
+    NSError *error = nil;
+    NSDictionary *task = BridgeCall(@{
+        @"command": @"addSubtask",
+        @"id": parentID,
+        @"title": TodoLocalized(self.language, @"新任务", @"New Task"),
+    }, &error);
+    if (!task) {
+        [self showError:error];
+        return;
+    }
+    [self reloadSummaries];
+    [self selectID:task[@"id"]];
     if (self.viewMode != TodoViewModePreview) {
         [self.detail.editor setSelectedRange:NSMakeRange(0, self.detail.editor.string.length)];
         [self.view.window makeFirstResponder:self.detail.editor];
     }
 }
 - (NSString *)currentCompletionState {
-    id value = self.currentTodo[@"subtasks"];
-    NSArray *subtasks = [value isKindOfClass:NSArray.class] ? value : @[];
-    if (subtasks.count == 0) return [self.currentTodo[@"completed"] boolValue] ? @"completed" : @"active";
-    NSInteger completed = 0;
-    for (NSDictionary *subtask in subtasks) if ([subtask[@"completed"] boolValue]) completed++;
-    if (completed == 0) return @"active";
-    if (completed == subtasks.count) return @"completed";
-    return @"partial";
-}
-- (void)updateSubtaskPresentation {
-    NSArray<NSDictionary *> *subtasks = self.currentSubtasks;
-    NSInteger completed = 0;
-    for (NSDictionary *subtask in subtasks) if ([subtask[@"completed"] boolValue]) completed++;
-    self.detail.subtaskCount = subtasks.count;
-    NSString *state = self.currentCompletionState;
-    NSString *stateTitle = [state isEqualToString:@"completed"]
-        ? TodoLocalized(self.language, @"已完成", @"Completed")
-        : ([state isEqualToString:@"partial"]
-            ? TodoLocalized(self.language, @"半完成", @"Partially completed")
-            : TodoLocalized(self.language, @"未完成", @"Not completed"));
-    self.detail.subtaskSummaryLabel.stringValue = subtasks.count > 0
-        ? [NSString stringWithFormat:TodoLocalized(self.language, @"子任务 %ld/%ld · %@", @"Subtasks %ld/%ld · %@"), (long)completed, (long)subtasks.count, stateTitle]
-        : TodoLocalized(self.language, @"子任务", @"Subtasks");
-    [self.detail.subtaskTable reloadData];
-    [self.detail setNeedsLayout:YES];
-    [self.detail layoutSubtreeIfNeeded];
-}
-- (void)applySubtaskMutation:(NSDictionary *)todo {
-    self.currentTodo = todo;
-    [self updateSubtaskPresentation];
-    [self updateCompletion];
-    [self reloadSummaries];
-    [self updateSelection];
-}
-- (void)addSubtask {
-    if (!self.currentTodo || !self.selectedID) return;
-    NSError *error = nil;
-    NSDictionary *todo = BridgeCall(@{
-        @"command": @"addSubtask",
-        @"id": self.selectedID,
-        @"title": TodoLocalized(self.language, @"新子任务", @"New Subtask"),
-    }, &error);
-    if (!todo) {
-        [self showError:error];
-        return;
-    }
-    [self applySubtaskMutation:todo];
-
-    NSInteger row = self.currentSubtasks.count - 1;
-    if (row < 0) return;
-    [self.detail.subtaskTable scrollRowToVisible:row];
-    SubtaskCellView *cell = (SubtaskCellView *)[self.detail.subtaskTable viewAtColumn:0
-                                                                                row:row
-                                                                    makeIfNecessary:YES];
-    if ([self.view.window makeFirstResponder:cell.titleField]) {
-        NSText *fieldEditor = [cell.titleField currentEditor];
-        [fieldEditor setSelectedRange:NSMakeRange(0, cell.titleField.stringValue.length)];
-    }
-}
-- (void)toggleSubtaskID:(NSNumber *)subtaskID completed:(BOOL)completed {
-    if (!self.selectedID || !subtaskID) return;
-    NSError *error = nil;
-    NSDictionary *todo = BridgeCall(@{
-        @"command": @"updateSubtask",
-        @"id": self.selectedID,
-        @"subtaskId": subtaskID,
-        @"completed": @(completed),
-    }, &error);
-    if (!todo) {
-        [self showError:error];
-        [self.detail.subtaskTable reloadData];
-        return;
-    }
-    [self applySubtaskMutation:todo];
-}
-- (void)renameSubtaskID:(NSNumber *)subtaskID title:(NSString *)title {
-    if (!self.selectedID || !subtaskID) return;
-    NSError *error = nil;
-    NSDictionary *todo = BridgeCall(@{
-        @"command": @"updateSubtask",
-        @"id": self.selectedID,
-        @"subtaskId": subtaskID,
-        @"title": title,
-    }, &error);
-    if (!todo) {
-        [self showError:error];
-        [self.detail.subtaskTable reloadData];
-        return;
-    }
-    [self applySubtaskMutation:todo];
-}
-- (void)deleteSubtaskID:(NSNumber *)subtaskID {
-    if (!self.selectedID || !subtaskID) return;
-    NSError *error = nil;
-    NSDictionary *todo = BridgeCall(@{
-        @"command": @"deleteSubtask",
-        @"id": self.selectedID,
-        @"subtaskId": subtaskID,
-    }, &error);
-    if (!todo) {
-        [self showError:error];
-        return;
-    }
-    [self applySubtaskMutation:todo];
+    id value = self.currentTodo[@"completionState"];
+    if ([value isKindOfClass:NSString.class]) return value;
+    return [self.currentTodo[@"completed"] boolValue] ? @"completed" : @"active";
 }
 - (void)toggleID:(NSNumber *)todoID completed:(BOOL)completed {
     if ([todoID isEqual:self.selectedID] && ![self saveIfNeeded]) {
@@ -2053,7 +1965,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     [self reloadSummaries];
     if ([todoID isEqual:self.selectedID]) {
         self.currentTodo = todo;
-        [self updateSubtaskPresentation];
         [self updateCompletion];
     }
 }
@@ -2083,22 +1994,43 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 - (void)updateCompletion {
     NSString *state = self.currentCompletionState;
     BOOL completed = [state isEqualToString:@"completed"];
-    BOOL hasSubtasks = self.currentSubtasks.count > 0;
-    if (completed) {
-        self.detail.completeButton.title = TodoLocalized(self.language, @"恢复为待办", @"Restore to Active");
-        self.detail.completeButton.foregroundColor = NSColor.systemGreenColor;
-    } else if (hasSubtasks) {
-        self.detail.completeButton.title = TodoLocalized(self.language, @"完成全部子任务", @"Complete All Subtasks");
-        self.detail.completeButton.foregroundColor = [state isEqualToString:@"partial"] ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor;
+    if (self.selectedIsSubtask) {
+        self.detail.completeButton.title = completed
+            ? TodoLocalized(self.language, @"恢复为待办", @"Restore to Active")
+            : TodoLocalized(self.language, @"标记完成", @"Mark Complete");
     } else {
-        self.detail.completeButton.title = TodoLocalized(self.language, @"标记完成", @"Mark Complete");
-        self.detail.completeButton.foregroundColor = NSColor.secondaryLabelColor;
+        self.detail.completeButton.title = completed
+            ? TodoLocalized(self.language, @"恢复全部任务", @"Restore All Tasks")
+            : TodoLocalized(self.language, @"完成全部任务", @"Complete All Tasks");
     }
+    self.detail.completeButton.foregroundColor = completed
+        ? NSColor.systemGreenColor
+        : ([state isEqualToString:@"partial"] ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor);
     [self.detail setNeedsLayout:YES];
     [self.detail layoutSubtreeIfNeeded];
 }
-- (void)deleteCurrent { if(!self.selectedID)return; NSNumber *deletedID=self.selectedID; NSError *error=nil; if(!BridgeCall(@{@"command":@"delete",@"id":deletedID},&error)){[self showError:error];return;} [self.resultExpansionOverrides removeObjectForKey:deletedID]; self.selectedID=nil; [self clearCurrent]; [self reloadSummaries]; }
-- (void)closeCurrent { if(![self saveIfNeeded])return; self.selectedID=nil; [self clearCurrent]; [self updateSelection]; }
+- (void)deleteCurrent {
+    if (!self.selectedID) return;
+    NSNumber *deletedID = self.selectedID;
+    NSNumber *parentID = self.selectedParentID;
+    BOOL deletedChild = self.selectedIsSubtask;
+    NSError *error = nil;
+    if (!BridgeCall(@{@"command": @"delete", @"id": deletedID}, &error)) {
+        [self showError:error];
+        return;
+    }
+    [self.resultExpansionOverrides removeObjectForKey:deletedID];
+    self.selectedID = nil;
+    [self clearCurrent];
+    [self reloadSummaries];
+    if (deletedChild && parentID && [self summaryForID:parentID]) [self selectID:parentID];
+}
+- (void)closeCurrent {
+    if (![self saveIfNeeded]) return;
+    self.selectedID = nil;
+    [self clearCurrent];
+    [self updateSelection];
+}
 - (void)scheduleLivePreviewUpdate {
     [self.previewTimer invalidate];
     self.previewTimer = nil;
@@ -2277,6 +2209,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     NSString *benchmarkArchiveView = environment[@"TODO_BENCHMARK_ARCHIVE_VIEW"];
     NSString *benchmarkManagementAction = environment[@"TODO_BENCHMARK_MANAGEMENT_ACTION"];
     NSString *benchmarkRefreshAfterMs = environment[@"TODO_BENCHMARK_REFRESH_AFTER_MS"];
+    NSString *benchmarkAddChildParentID = environment[@"TODO_BENCHMARK_ADD_CHILD_TO_PARENT_ID"];
     if ([benchmarkStatusFilter isEqualToString:@"active"]) {
         self.filterIndex = 1;
     } else if ([benchmarkStatusFilter isEqualToString:@"completed"]) {
@@ -2306,7 +2239,19 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         [self applyFilter];
     }
 
-    NSNumber *first = self.filtered.firstObject[@"id"] ?: self.summaries.firstObject[@"id"];
+    NSString *benchmarkTaskID = environment[@"TODO_BENCHMARK_TASK_ID"];
+    NSNumber *first = nil;
+    if (benchmarkTaskID.longLongValue > 0) {
+        first = @(benchmarkTaskID.longLongValue);
+    } else if ([environment[@"TODO_BENCHMARK_SELECT_FIRST_CHILD"] boolValue]) {
+        for (NSDictionary *row in self.rows) {
+            if ([row[@"kind"] isEqualToString:@"subtask"]) {
+                first = row[@"id"];
+                break;
+            }
+        }
+    }
+    if (!first) first = self.rows.firstObject[@"id"] ?: self.summaries.firstObject[@"id"];
     if ([mode isEqual:@"edit"] || [mode isEqual:@"split"] || [mode isEqual:@"preview"]) {
         if ([mode isEqual:@"edit"]) self.viewMode = TodoViewModeEdit;
         else if ([mode isEqual:@"split"]) self.viewMode = TodoViewModeSplit;
@@ -2315,8 +2260,11 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         self.detail.modeControl.selectedIndex = self.viewMode;
         [self selectID:first];
     }
-    if ([environment[@"TODO_BENCHMARK_SWITCH_TO_SECOND"] boolValue] && self.filtered.count > 1) {
-        [self selectID:self.filtered[1][@"id"]];
+    if ([environment[@"TODO_BENCHMARK_SWITCH_TO_SECOND"] boolValue] && self.rows.count > 1) {
+        [self selectID:self.rows[1][@"id"]];
+    }
+    if (benchmarkAddChildParentID.longLongValue > 0) {
+        [self addSubtaskToParentID:@(benchmarkAddChildParentID.longLongValue)];
     }
     NSString *forcedResultExpansion = environment[@"TODO_BENCHMARK_RESULT_EXPANDED"];
     if (forcedResultExpansion.length) {
@@ -2387,16 +2335,13 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
                     if (value) resultPreviewLinks++;
                 }];
             }
-            NSNumber *firstFilteredID = self.filtered.count > 0 ? self.filtered[0][@"id"] : nil;
-            NSNumber *secondFilteredID = self.filtered.count > 1 ? self.filtered[1][@"id"] : nil;
-            NSNumber *thirdFilteredID = self.filtered.count > 2 ? self.filtered[2][@"id"] : nil;
-            TaskCellView *firstCell = self.filtered.count > 0 ? (TaskCellView *)[self.sidebar.tableView viewAtColumn:0 row:0 makeIfNecessary:YES] : nil;
-            NSArray<NSDictionary *> *diagnosticSubtasks = self.currentSubtasks;
-            SubtaskCellView *firstSubtaskCell = diagnosticSubtasks.count > 0
-                ? (SubtaskCellView *)[self.detail.subtaskTable viewAtColumn:0 row:0 makeIfNecessary:YES]
+            NSNumber *firstRowID = self.rows.count > 0 ? self.rows[0][@"id"] : nil;
+            NSNumber *secondRowID = self.rows.count > 1 ? self.rows[1][@"id"] : nil;
+            NSNumber *thirdRowID = self.rows.count > 2 ? self.rows[2][@"id"] : nil;
+            NSDictionary *firstRow = self.rows.count > 0 ? self.rows[0] : nil;
+            TaskCellView *firstCell = self.rows.count > 0
+                ? (TaskCellView *)[self.sidebar.tableView viewAtColumn:0 row:0 makeIfNecessary:YES]
                 : nil;
-            NSInteger diagnosticCompletedSubtasks = 0;
-            for (NSDictionary *subtask in diagnosticSubtasks) if ([subtask[@"completed"] boolValue]) diagnosticCompletedSubtasks++;
             NSMenu *filterMenu = [self buildFilterMenu];
             NSUInteger checkedFilterItems = 0;
             NSUInteger filterMenuHeadings = 0;
@@ -2405,46 +2350,35 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
                 if (!item.enabled && !item.isSeparatorItem) filterMenuHeadings++;
             }
             fprintf(stderr,
-                    "mode=%s viewMode=%s sortMode=%s filterStatus=%ld dateFilter=%ld archiveView=%d completionState=%s subtaskCount=%lu completedSubtasks=%ld subtaskRows=%ld subtaskSectionVisible=%d subtaskScrollHidden=%d subtaskScrollHeight=%.0f documentTop=%.0f subtaskSummary=%s firstSubtaskID=%s firstSubtaskTitle=%s firstSubtaskCheck=%ld parentCheck=%ld completeButton=%s filterMenuItems=%lu filterMenuChecked=%lu filterMenuHeadings=%lu filterButtonTitle=%s toggleX=%.0f toggleWidth=%.0f filterButtonX=%.0f filterButtonWidth=%.0f tableY=%.0f tableHeight=%.0f firstFilteredID=%s firstCellID=%s firstTitleX=%.0f firstTitleWidth=%.0f firstTitleY=%.0f firstIDY=%.0f secondFilteredID=%s thirdFilteredID=%s selectedID=%s selectedPriority=%s priorityControl=%ld resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s managementTitle=%s managementHidden=%d todos=%lu filtered=%lu window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
+                    "mode=%s viewMode=%s sortMode=%s filterStatus=%ld dateFilter=%ld archiveView=%d selectedKind=%s selectedID=%s selectedParentID=%s completionState=%s completeButton=%s parentCount=%lu filteredParents=%lu rowCount=%lu firstRowID=%s firstRowKind=%s firstCellID=%s firstRowAddHidden=%d firstTitleX=%.0f firstTitleWidth=%.0f secondRowID=%s thirdRowID=%s filterMenuItems=%lu filterMenuChecked=%lu filterMenuHeadings=%lu filterButtonTitle=%s tableY=%.0f tableHeight=%.0f selectedPriority=%s priorityControl=%ld resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s managementTitle=%s window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
                     mode.UTF8String,
                     self.viewMode == TodoViewModeEdit ? "edit" : (self.viewMode == TodoViewModeSplit ? "split" : "preview"),
                     self.sortMode == TodoSortModeNewestFirst ? "newest" : (self.sortMode == TodoSortModePriorityFirst ? "priority" : "original"),
                     (long)self.filterIndex,
                     (long)self.dateFilterMode,
                     self.archiveView,
+                    self.selectedIsSubtask ? "subtask" : "parent",
+                    self.selectedID.stringValue.UTF8String ?: "none",
+                    self.selectedParentID.stringValue.UTF8String ?: "none",
                     self.currentCompletionState.UTF8String,
-                    (unsigned long)diagnosticSubtasks.count,
-                    (long)diagnosticCompletedSubtasks,
-                    (long)self.detail.subtaskTable.numberOfRows,
-                    self.detail.subtaskSectionVisible,
-                    self.detail.subtaskScroll.hidden,
-                    NSHeight(self.detail.subtaskScroll.frame),
-                    NSMinY(self.detail.editorScroll.frame),
-                    self.detail.subtaskSummaryLabel.stringValue.UTF8String,
-                    diagnosticSubtasks.count > 0 ? [diagnosticSubtasks[0][@"id"] stringValue].UTF8String : "none",
-                    firstSubtaskCell.titleField.stringValue.UTF8String ?: "none",
-                    (long)firstSubtaskCell.check.checkState,
-                    (long)firstCell.check.checkState,
                     self.detail.completeButton.title.UTF8String,
+                    (unsigned long)self.summaries.count,
+                    (unsigned long)self.filtered.count,
+                    (unsigned long)self.rows.count,
+                    firstRowID.stringValue.UTF8String ?: "none",
+                    [firstRow[@"kind"] isKindOfClass:NSString.class] ? [firstRow[@"kind"] UTF8String] : "none",
+                    firstCell.idLabel.stringValue.UTF8String ?: "none",
+                    firstCell.addButton.hidden,
+                    NSMinX(firstCell.titleLabel.frame),
+                    NSWidth(firstCell.titleLabel.frame),
+                    secondRowID.stringValue.UTF8String ?: "none",
+                    thirdRowID.stringValue.UTF8String ?: "none",
                     (unsigned long)filterMenu.itemArray.count,
                     (unsigned long)checkedFilterItems,
                     (unsigned long)filterMenuHeadings,
                     self.sidebar.filterMenuButton.title.UTF8String,
-                    NSMinX(self.sidebar.toggleAllButton.frame),
-                    NSWidth(self.sidebar.toggleAllButton.frame),
-                    NSMinX(self.sidebar.filterMenuButton.frame),
-                    NSWidth(self.sidebar.filterMenuButton.frame),
                     NSMinY(self.sidebar.scrollView.frame),
                     NSHeight(self.sidebar.scrollView.frame),
-                    firstFilteredID.stringValue.UTF8String ?: "none",
-                    firstCell.idLabel.stringValue.UTF8String ?: "none",
-                    NSMinX(firstCell.titleLabel.frame),
-                    NSWidth(firstCell.titleLabel.frame),
-                    NSMinY(firstCell.titleLabel.frame),
-                    NSMinY(firstCell.idLabel.frame),
-                    secondFilteredID.stringValue.UTF8String ?: "none",
-                    thirdFilteredID.stringValue.UTF8String ?: "none",
-                    self.selectedID.stringValue.UTF8String ?: "none",
                     TodoPriorityValue(TodoPriorityFromValue(self.currentTodo[@"priority"])).UTF8String,
                     (long)self.detail.priorityControl.selectedIndex,
                     self.detail.resultExpanded,
@@ -2454,8 +2388,6 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
                     self.sidebar.headingLabel.stringValue.UTF8String,
                     self.sidebar.createTaskButton.title.UTF8String,
                     self.sidebar.managementButton.title.UTF8String,
-                    self.sidebar.managementButton.hidden,
-                    (unsigned long)self.summaries.count, (unsigned long)self.filtered.count,
                     NSWidth(self.view.window.contentView.bounds), NSHeight(self.view.window.contentView.bounds),
                     NSWidth(self.split.bounds), NSHeight(self.split.bounds),
                     NSMinX(self.sidebar.frame), NSMinY(self.sidebar.frame), NSWidth(self.sidebar.frame), NSHeight(self.sidebar.frame),

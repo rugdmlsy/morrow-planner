@@ -4,12 +4,31 @@ A local-first macOS Todo application with a native desktop interface and a nativ
 
 - `Todo`: Objective-C AppKit interface using `NSTableView` and `NSTextView`.
 - `todoctl`: non-interactive Rust CLI suitable for scripts and automation.
-- `todo-core`: shared Rust validation, locking, and atomic JSON persistence.
+- `todo-core`: shared Rust validation, locking, migration, and atomic JSON persistence.
 - `todo-macos-bridge`: small static Rust library exposed to AppKit through a C ABI.
 
 The desktop application contains no WebView, JavaScript runtime, HTML renderer, SwiftUI frontend, or Tauri runtime.
 
-Each task is created through the New Task button and immediately opens as one editable Markdown document; there is no separate quick-add path. The first non-empty Markdown line supplies the title shown in the sidebar. A task can also contain independently editable and checkable subtasks. A parent with no completed subtasks is active, a parent with some completed subtasks is partially completed, and a parent becomes completed only when every subtask is complete. Clicking the parent completion control completes or restores all of its subtasks. The subtask list grows to four visible rows and then scrolls, so large projects do not consume the full document workspace. Each task also has a multiline Markdown completion-result editor for recording delivered output, links, or verification notes independently from the task document. The completion-result section is collapsible: empty results start collapsed at the bottom of the detail view, while non-empty results start expanded; a per-task manual choice is retained for the current app session. When expanded, the task and result editors both use AppKit TextKit views, and their vertical proportions can be changed by dragging the divider between them. The detail workspace has three global modes: Edit maximizes the editable source, Split places the editor on the left and a live Markdown preview on the right, and Preview maximizes the rendered result. The selected mode applies to both the task document and completion result, carries across task selection, and is stored locally; Split is the default for a new installation. The interface can switch between Chinese and English, and the preference is stored locally. Every new task receives a stable numeric ID, an immutable `createdAtMs` timestamp when it is first defined, and a three-level priority that defaults to Low. The sidebar displays each ID as `#<id>` on the secondary line so the title keeps its full width and the same task can be targeted from the command line. Editing or completing the task does not change its creation timestamp. The sidebar combines completion-state filtering, creation-time ranges, and sorting in one compact Filter / Sort menu. The menu supports all, active, or completed tasks; all creation times, the rolling last 24 hours, the rolling last 7 days, or a custom inclusive date range; and original, newest-first, or priority-first ordering. The button shows how many non-default settings are active, while its tooltip summarizes the current configuration. Priority sorting orders High before Medium before Low, with equal priorities ordered newest first. The selected sort order is stored locally. A neutral Manage menu in the sidebar contains archive and destructive bulk operations: archive the current task, archive or restore the filtered list, archive completed tasks, restore all archived tasks, delete completed tasks, and delete archived tasks. Destructive bulk deletion requires confirmation, archived tasks are hidden from the normal list, and the same menu switches to the archive view. Tasks written by `todoctl` or another process can be loaded without restarting the app using the sidebar refresh button or Command-R; the current selection is retained and its document is reloaded from disk. Full task content is loaded only for the selected task. Whenever a preview pane is visible, Markdown is parsed by `pulldown-cmark`, Rust returns structured style runs rather than HTML, and AppKit converts those runs into an attributed string for a read-only `NSTextView`. In Split mode, preview rendering is debounced and refreshed while the user types.
+## Task hierarchy
+
+The sidebar shows parent projects and their indented child tasks in one list. Parent and child tasks both have global numeric IDs and are selectable, filterable, sortable, and controllable from `todoctl`. Each new parent is created with one child task by default. The `+` button on a parent row adds another child and opens it immediately.
+
+A selected parent or child uses the same full detail workspace. Both support:
+
+- an editable Markdown document;
+- Edit, Split, and Preview modes;
+- a multiline Markdown completion result;
+- Low, Medium, or High priority;
+- independent creation time and stable ID;
+- completion and restoration controls.
+
+A child can be completed independently. A parent is active when none of its children are complete, partially completed when only some are complete, and completed only when every child is complete. Completing or restoring a parent applies the same state to all of its children. At least one child is retained under every parent.
+
+The first non-empty Markdown line supplies the title shown in the sidebar. Parent rows show child progress, such as `2/5`. Partial parents use an orange mixed-state checkbox; completed tasks use a green checkbox. Archive operations remain group-scoped: archiving a parent hides the parent and all of its children together.
+
+The completion-result section is collapsible. Empty results start collapsed, non-empty results start expanded, and the task/result ratio can be changed by dragging the divider. Split mode places the editor on the left and a live Markdown preview on the right. Markdown is parsed by `pulldown-cmark`; Rust returns structured style runs and AppKit renders them without an HTML or JavaScript runtime.
+
+The sidebar combines status filtering, creation-time filtering, and sorting in one Filter / Sort menu. It supports active, completed, or all tasks; all time, the last 24 hours, the last 7 days, or a custom inclusive date range; and original, newest-first, or priority-first order. Parent-child grouping is retained while matching children remain individually visible. Tasks changed by another process can be reloaded with the refresh button or Command-R without restarting the app.
 
 Data is stored at:
 
@@ -17,7 +36,7 @@ Data is stored at:
 ~/Library/Application Support/com.xycdev.todo/todos.json
 ```
 
-Set `TODO_DATA_FILE` to use another file. Legacy records without `createdAtMs` are migrated once using the existing JSON file's modification time as their best available approximate creation time. Legacy records without `priority` load as Low, records without `archived` load as unarchived, and records without `subtasks` load with an empty subtask list.
+Set `TODO_DATA_FILE` to use another file. Legacy parent-only records are migrated to contain one first-class child without discarding the original parent data. Missing child fields receive safe defaults, missing creation times use the best available parent or file timestamp, and duplicate legacy child IDs are reassigned so IDs are globally unique.
 
 ## Build the macOS app
 
@@ -49,30 +68,43 @@ cargo build --release --manifest-path src-tauri/Cargo.toml -p todoctl
 
 The binary is written to `src-tauri/target/release/todoctl`.
 
+Create a parent and inspect its default child:
+
 ```bash
-ID=$(todoctl add "Write the first task")
+PARENT_ID=$(todoctl add "Ship the release")
+todoctl show "$PARENT_ID"
+todoctl subtask-list "$PARENT_ID"
+```
+
+Add and edit a child. Once its global ID is known, the same generic commands used for parents work directly on it:
+
+```bash
+CHILD_ID=$(todoctl subtask-add "$PARENT_ID" "Run the full test suite")
+
+todoctl content "$CHILD_ID" "# Run the full test suite\n\nVerify unit and integration tests."
+todoctl result "$CHILD_ID" "All tests passed"
+todoctl priority "$CHILD_ID" high
+todoctl done "$CHILD_ID"
+todoctl show "$CHILD_ID" --json
+todoctl undo "$CHILD_ID"
+todoctl delete "$CHILD_ID"
+```
+
+Other commands:
+
+```bash
 todoctl list
-todoctl show "$ID"
-todoctl show "$ID" --json
-todoctl done "$ID"
-todoctl undo "$ID"
-todoctl edit "$ID" "Ship the MVP"
-todoctl content "$ID" "# Ship the MVP\n\nVerify the native package."
-todoctl result "$ID" "Released v1.0 and verified the checksum"
-todoctl priority "$ID" high
-BUILD_ID=$(todoctl subtask-add "$ID" "Build package")
-TEST_ID=$(todoctl subtask-add "$ID" "Run tests")
-todoctl subtask-list "$ID"
-todoctl subtask-done "$ID" "$BUILD_ID"
-todoctl subtask-edit "$ID" "$TEST_ID" "Run full test suite"
-todoctl subtask-undo "$ID" "$BUILD_ID"
-todoctl subtask-delete "$ID" "$TEST_ID"
-todoctl archive "$ID"
+todoctl list active
+todoctl list completed
+todoctl edit <id> "New title"
+todoctl clear-result <id>
+todoctl done <parent-id>       # completes every child
+todoctl undo <parent-id>       # restores every child
+todoctl archive <parent-id>
+todoctl unarchive <parent-id>
 todoctl list archived
-todoctl unarchive "$ID"
-todoctl clear-result "$ID"
-todoctl delete "$ID"
-todoctl list completed --json
+todoctl complete-all
+todoctl restore-all
 todoctl archive-completed
 todoctl restore-archived
 todoctl clear-completed
@@ -80,10 +112,19 @@ todoctl clear-archived
 todoctl path
 ```
 
+Compatibility commands remain available for scripts that specify both IDs:
+
+```bash
+todoctl subtask-done <parent-id> <child-id>
+todoctl subtask-undo <parent-id> <child-id>
+todoctl subtask-edit <parent-id> <child-id> "New title"
+todoctl subtask-delete <parent-id> <child-id>
+```
+
 For isolated tests:
 
 ```bash
-todoctl --data-file /tmp/todo-test.json add "Test task"
+todoctl --data-file /tmp/todo-test.json add "Test project"
 ```
 
 ## Verification
@@ -93,17 +134,20 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
 cargo test --manifest-path src-tauri/Cargo.toml --workspace
 cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
 ./native-macos/build.sh
+codesign --verify --deep --strict native-macos/build/Todo.app
 ```
 
-## Memory measurement and UI diagnostics
+## Headless UI diagnostics
 
-The app supports isolated benchmark startup modes used by the development scripts. Set `TODO_BENCHMARK_HEADLESS=1` to keep the benchmark window transparent and non-activating, so automated checks do not change the current frontmost application or keyboard focus:
+Set `TODO_BENCHMARK_HEADLESS=1` to keep the benchmark window transparent and non-activating. This allows layout and data-flow checks without changing the current frontmost application or keyboard focus.
 
 ```bash
-TODO_DATA_FILE=/tmp/todos.json TODO_BENCHMARK_HEADLESS=1 TODO_BENCHMARK_MODE=list native-macos/build/Todo.app/Contents/MacOS/Todo
-TODO_DATA_FILE=/tmp/todos.json TODO_BENCHMARK_HEADLESS=1 TODO_BENCHMARK_MODE=edit native-macos/build/Todo.app/Contents/MacOS/Todo
-TODO_DATA_FILE=/tmp/todos.json TODO_BENCHMARK_HEADLESS=1 TODO_BENCHMARK_MODE=split native-macos/build/Todo.app/Contents/MacOS/Todo
-TODO_DATA_FILE=/tmp/todos.json TODO_BENCHMARK_HEADLESS=1 TODO_BENCHMARK_MODE=preview native-macos/build/Todo.app/Contents/MacOS/Todo
+TODO_DATA_FILE=/tmp/todos.json \
+TODO_BENCHMARK_HEADLESS=1 \
+TODO_BENCHMARK_MODE=edit \
+TODO_BENCHMARK_TASK_ID=42 \
+TODO_LAYOUT_DIAGNOSTICS=1 \
+native-macos/build/Todo.app/Contents/MacOS/Todo
 ```
 
-`list` loads sidebar summaries only. `edit` loads the first full document in the editor, `split` also creates its live Markdown preview, and `preview` displays the rendered document at full width.
+`TODO_BENCHMARK_TASK_ID` accepts a parent or child global ID. `TODO_BENCHMARK_SELECT_FIRST_CHILD=1` selects the first visible child when an exact ID is not supplied. Edit, Split, Preview, filtering, sorting, refresh, completion-result expansion, and priority diagnostics use the same isolated startup path.

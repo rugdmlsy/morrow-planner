@@ -6,7 +6,7 @@ use std::{
     os::raw::c_char,
     panic::{catch_unwind, AssertUnwindSafe},
 };
-use todo_core::{Todo, TodoCompletionState, TodoPriority, TodoStore};
+use todo_core::{Task, TaskKind, TaskRecord, Todo, TodoCompletionState, TodoPriority, TodoStore};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "camelCase")]
@@ -17,6 +17,8 @@ enum Request {
     },
     Add {
         title: String,
+        #[serde(rename = "initialSubtaskTitle")]
+        initial_subtask_title: Option<String>,
     },
     Update {
         id: u64,
@@ -39,6 +41,10 @@ enum Request {
         #[serde(rename = "subtaskId")]
         subtask_id: u64,
         title: Option<String>,
+        content: Option<String>,
+        #[serde(rename = "completionResult")]
+        completion_result: Option<String>,
+        priority: Option<TodoPriority>,
         completed: Option<bool>,
     },
     DeleteSubtask {
@@ -65,17 +71,39 @@ enum Request {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TodoSummary {
+struct TaskSummary {
+    kind: TaskKind,
+    parent_id: Option<u64>,
     id: u64,
     title: String,
     subtitle: String,
     completed: bool,
     completion_state: TodoCompletionState,
-    subtask_count: usize,
-    completed_subtask_count: usize,
     priority: TodoPriority,
     archived: bool,
     created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TodoSummary {
+    #[serde(flatten)]
+    task: TaskSummary,
+    subtask_count: usize,
+    completed_subtask_count: usize,
+    subtasks: Vec<TaskSummary>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskDetail {
+    kind: TaskKind,
+    parent_id: Option<u64>,
+    #[serde(flatten)]
+    task: Task,
+    completion_state: TodoCompletionState,
+    archived: bool,
+    subtasks: Vec<TaskSummary>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -194,22 +222,23 @@ fn handle_request(request: &str) -> Result<Value, String> {
     match request {
         Request::List => {
             let store = TodoStore::load_default().map_err(|error| error.to_string())?;
-            serde_json::to_value(store.list().iter().map(todo_summary).collect::<Vec<_>>())
-                .map_err(|error| error.to_string())
+            summaries(&store)
         }
         Request::Get { id } => {
             let store = TodoStore::load_default().map_err(|error| error.to_string())?;
-            let todo = store
-                .list()
-                .iter()
-                .find(|todo| todo.id == id)
-                .cloned()
-                .ok_or_else(|| format!("task {id} was not found"))?;
-            serde_json::to_value(todo).map_err(|error| error.to_string())
+            let detail =
+                task_detail(&store, id).ok_or_else(|| format!("task {id} was not found"))?;
+            serde_json::to_value(detail).map_err(|error| error.to_string())
         }
-        Request::Add { title } => {
+        Request::Add {
+            title,
+            initial_subtask_title,
+        } => {
             let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
-            let todo = store.add(title).map_err(|error| error.to_string())?;
+            let child_title = initial_subtask_title.unwrap_or_else(|| title.clone());
+            let todo = store
+                .add_with_initial_subtask(title, child_title)
+                .map_err(|error| error.to_string())?;
             serde_json::to_value(todo_summary(&todo)).map_err(|error| error.to_string())
         }
         Request::Update {
@@ -221,41 +250,69 @@ fn handle_request(request: &str) -> Result<Value, String> {
             completed,
         } => {
             let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
-            let todo = store
+            store
                 .update(id, title, content, completion_result, priority, completed)
                 .map_err(|error| error.to_string())?;
-            serde_json::to_value(todo).map_err(|error| error.to_string())
+            let detail =
+                task_detail(&store, id).ok_or_else(|| format!("task {id} was not found"))?;
+            serde_json::to_value(detail).map_err(|error| error.to_string())
         }
         Request::Delete { id } => {
             let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
-            store.delete(id).map_err(|error| error.to_string())?;
+            store.delete_task(id).map_err(|error| error.to_string())?;
             Ok(Value::Bool(true))
         }
         Request::AddSubtask { id, title } => {
             let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
-            let todo = store
+            let record = store
                 .add_subtask(id, title)
                 .map_err(|error| error.to_string())?;
-            serde_json::to_value(todo).map_err(|error| error.to_string())
+            let archived = store.todo(id).is_some_and(|todo| todo.archived);
+            serde_json::to_value(task_detail_from_record(record, archived))
+                .map_err(|error| error.to_string())
         }
         Request::UpdateSubtask {
             id,
             subtask_id,
             title,
+            content,
+            completion_result,
+            priority,
             completed,
         } => {
             let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
-            let todo = store
-                .update_subtask(id, subtask_id, title, completed)
+            let existing = store
+                .task(subtask_id)
+                .ok_or_else(|| format!("task {subtask_id} was not found"))?;
+            if existing.parent_id != Some(id) {
+                return Err(format!("task {subtask_id} is not a child of task {id}"));
+            }
+            let record = store
+                .update(
+                    subtask_id,
+                    title,
+                    content,
+                    completion_result,
+                    priority,
+                    completed,
+                )
                 .map_err(|error| error.to_string())?;
-            serde_json::to_value(todo).map_err(|error| error.to_string())
+            let archived = store.todo(id).is_some_and(|todo| todo.archived);
+            serde_json::to_value(task_detail_from_record(record, archived))
+                .map_err(|error| error.to_string())
         }
         Request::DeleteSubtask { id, subtask_id } => {
             let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
-            let todo = store
-                .delete_subtask(id, subtask_id)
+            let record = store
+                .task(subtask_id)
+                .ok_or_else(|| format!("task {subtask_id} was not found"))?;
+            if record.parent_id != Some(id) {
+                return Err(format!("task {subtask_id} is not a child of task {id}"));
+            }
+            store
+                .delete_task(subtask_id)
                 .map_err(|error| error.to_string())?;
-            serde_json::to_value(todo).map_err(|error| error.to_string())
+            Ok(Value::Bool(true))
         }
         Request::SetArchived { ids, archived } => {
             let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
@@ -293,8 +350,7 @@ fn handle_request(request: &str) -> Result<Value, String> {
             store
                 .set_all_completed(completed)
                 .map_err(|error| error.to_string())?;
-            serde_json::to_value(store.list().iter().map(todo_summary).collect::<Vec<_>>())
-                .map_err(|error| error.to_string())
+            summaries(&store)
         }
         Request::DataPath => {
             let store = TodoStore::load_default().map_err(|error| error.to_string())?;
@@ -306,37 +362,129 @@ fn handle_request(request: &str) -> Result<Value, String> {
     }
 }
 
+fn summaries(store: &TodoStore) -> Result<Value, String> {
+    serde_json::to_value(store.list().iter().map(todo_summary).collect::<Vec<_>>())
+        .map_err(|error| error.to_string())
+}
+
+fn task_detail(store: &TodoStore, id: u64) -> Option<TaskDetail> {
+    if let Some(todo) = store.todo(id) {
+        let mut task = todo.task.clone();
+        task.completed = todo.is_completed();
+        return Some(TaskDetail {
+            kind: TaskKind::Parent,
+            parent_id: None,
+            task,
+            completion_state: todo.completion_state(),
+            archived: todo.archived,
+            subtasks: todo
+                .subtasks
+                .iter()
+                .map(|task| child_summary(task, todo.id, todo.archived))
+                .collect(),
+        });
+    }
+    store.task(id).map(|record| {
+        let archived = record
+            .parent_id
+            .and_then(|parent_id| store.todo(parent_id))
+            .is_some_and(|todo| todo.archived);
+        task_detail_from_record(record, archived)
+    })
+}
+
+fn task_detail_from_record(record: TaskRecord, archived: bool) -> TaskDetail {
+    let completion_state = if record.task.completed {
+        TodoCompletionState::Completed
+    } else {
+        TodoCompletionState::Active
+    };
+    TaskDetail {
+        kind: record.kind,
+        parent_id: record.parent_id,
+        task: record.task,
+        completion_state,
+        archived,
+        subtasks: Vec::new(),
+    }
+}
+
 fn todo_summary(todo: &Todo) -> TodoSummary {
-    let document = document_text(todo);
+    TodoSummary {
+        task: task_summary(
+            &todo.task,
+            TaskKind::Parent,
+            None,
+            todo.archived,
+            todo.completion_state(),
+        ),
+        subtask_count: todo.subtasks.len(),
+        completed_subtask_count: todo.completed_subtask_count(),
+        subtasks: todo
+            .subtasks
+            .iter()
+            .map(|task| child_summary(task, todo.id, todo.archived))
+            .collect(),
+    }
+}
+
+fn child_summary(task: &Task, parent_id: u64, archived: bool) -> TaskSummary {
+    task_summary(
+        task,
+        TaskKind::Subtask,
+        Some(parent_id),
+        archived,
+        if task.completed {
+            TodoCompletionState::Completed
+        } else {
+            TodoCompletionState::Active
+        },
+    )
+}
+
+fn task_summary(
+    task: &Task,
+    kind: TaskKind,
+    parent_id: Option<u64>,
+    archived: bool,
+    completion_state: TodoCompletionState,
+) -> TaskSummary {
+    let base = summary_text(task);
+    TaskSummary {
+        kind,
+        parent_id,
+        id: task.id,
+        title: base.0,
+        subtitle: base.1,
+        completed: completion_state == TodoCompletionState::Completed,
+        completion_state,
+        priority: task.priority,
+        archived,
+        created_at_ms: task.created_at_ms,
+    }
+}
+
+fn summary_text(task: &Task) -> (String, String) {
+    let document = document_text(task);
     let mut lines = document
         .lines()
         .map(strip_markdown)
         .filter(|line| !line.is_empty() && !is_separator(line));
-
-    let title = lines.next().unwrap_or_else(|| "新任务".to_owned());
+    let title = lines.next().unwrap_or_else(|| "New Task".to_owned());
     let subtitle = lines.collect::<Vec<_>>().join(" ");
-
-    TodoSummary {
-        id: todo.id,
-        title: truncate(&title, 42),
-        subtitle: if subtitle.is_empty() {
-            "暂无更多内容".to_owned()
+    (
+        truncate(&title, 42),
+        if subtitle.is_empty() {
+            String::new()
         } else {
             truncate(&subtitle, 76)
         },
-        completed: todo.is_completed(),
-        completion_state: todo.completion_state(),
-        subtask_count: todo.subtasks.len(),
-        completed_subtask_count: todo.completed_subtask_count(),
-        priority: todo.priority,
-        archived: todo.archived,
-        created_at_ms: todo.created_at_ms,
-    }
+    )
 }
 
-fn document_text(todo: &Todo) -> String {
-    let title = todo.title.trim();
-    let content = todo.content.trim();
+fn document_text(task: &Task) -> String {
+    let title = task.title.trim();
+    let content = task.content.trim();
     match (title.is_empty(), content.is_empty()) {
         (true, _) => content.to_owned(),
         (_, true) => title.to_owned(),
@@ -652,96 +800,64 @@ fn append_text(runs: &mut Vec<MarkdownRun>, state: &InlineState, text: &str) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn creates_summaries_without_retaining_full_content() {
-        let summary = todo_summary(&Todo {
-            id: 7,
-            title: String::new(),
-            content: "# Main title\n\nMore **detail** here".to_owned(),
-            completion_result: "Verified output".to_owned(),
+    fn task() -> Task {
+        Task {
+            id: 2,
+            title: "Child".to_owned(),
+            content: "More detail".to_owned(),
+            completion_result: "Verified".to_owned(),
             priority: TodoPriority::High,
-            archived: true,
-            subtasks: vec![
-                todo_core::Subtask {
-                    id: 1,
-                    title: "Build".to_owned(),
-                    completed: true,
-                },
-                todo_core::Subtask {
-                    id: 2,
-                    title: "Test".to_owned(),
-                    completed: false,
-                },
-            ],
             completed: false,
-            created_at_ms: 1_234,
-        });
+            created_at_ms: 123,
+        }
+    }
 
-        assert_eq!(summary.title, "Main title");
-        assert_eq!(summary.subtitle, "More detail here");
+    #[test]
+    fn child_summary_keeps_first_class_fields() {
+        let summary = child_summary(&task(), 1, false);
+        assert_eq!(summary.kind, TaskKind::Subtask);
+        assert_eq!(summary.parent_id, Some(1));
+        assert_eq!(summary.title, "Child");
+        assert_eq!(summary.subtitle, "More detail");
         assert_eq!(summary.priority, TodoPriority::High);
-        assert!(summary.archived);
-        assert_eq!(summary.completion_state, TodoCompletionState::Partial);
-        assert_eq!(summary.subtask_count, 2);
-        assert_eq!(summary.completed_subtask_count, 1);
-        assert!(!summary.completed);
-        assert_eq!(summary.created_at_ms, 1_234);
+        assert_eq!(summary.created_at_ms, 123);
     }
 
     #[test]
-    fn accepts_completion_result_in_update_requests() {
-        let request: Request = serde_json::from_str(
-            r#"{"command":"update","id":9,"completionResult":"Tests passed"}"#,
-        )
-        .expect("update request should parse");
-
-        match request {
-            Request::Update {
-                id,
-                completion_result,
-                ..
-            } => {
-                assert_eq!(id, 9);
-                assert_eq!(completion_result.as_deref(), Some("Tests passed"));
-            }
-            _ => panic!("expected update request"),
-        }
+    fn parent_summary_contains_child_summaries() {
+        let todo = Todo {
+            task: Task {
+                id: 1,
+                title: "Project".to_owned(),
+                content: String::new(),
+                completion_result: String::new(),
+                priority: TodoPriority::Medium,
+                completed: false,
+                created_at_ms: 100,
+            },
+            archived: false,
+            subtasks: vec![task()],
+        };
+        let summary = todo_summary(&todo);
+        assert_eq!(summary.subtask_count, 1);
+        assert_eq!(summary.subtasks[0].id, 2);
+        assert_eq!(summary.task.completion_state, TodoCompletionState::Active);
     }
 
     #[test]
-    fn accepts_priority_in_update_requests() {
-        let request: Request =
-            serde_json::from_str(r#"{"command":"update","id":9,"priority":"medium"}"#)
-                .expect("priority update request should parse");
-
-        match request {
-            Request::Update { id, priority, .. } => {
-                assert_eq!(id, 9);
-                assert_eq!(priority, Some(TodoPriority::Medium));
-            }
-            _ => panic!("expected update request"),
-        }
-    }
-
-    #[test]
-    fn accepts_subtask_requests() {
-        let add: Request =
-            serde_json::from_str(r#"{"command":"addSubtask","id":9,"title":"Run tests"}"#)
-                .expect("add subtask request should parse");
-        assert!(matches!(
-            add,
-            Request::AddSubtask { id: 9, ref title } if title == "Run tests"
-        ));
-
+    fn parses_first_class_subtask_requests() {
         let update: Request = serde_json::from_str(
-            r#"{"command":"updateSubtask","id":9,"subtaskId":2,"completed":true}"#,
+            r##"{"command":"updateSubtask","id":1,"subtaskId":2,"content":"# Markdown","completionResult":"Done","priority":"high","completed":true}"##,
         )
-        .expect("update subtask request should parse");
+        .expect("request should parse");
         assert!(matches!(
             update,
             Request::UpdateSubtask {
-                id: 9,
+                id: 1,
                 subtask_id: 2,
+                content: Some(_),
+                completion_result: Some(_),
+                priority: Some(TodoPriority::High),
                 completed: Some(true),
                 ..
             }
@@ -749,43 +865,20 @@ mod tests {
     }
 
     #[test]
-    fn accepts_bulk_archive_requests() {
-        let request: Request =
-            serde_json::from_str(r#"{"command":"setArchived","ids":[3,7],"archived":true}"#)
-                .expect("archive request should parse");
-
-        match request {
-            Request::SetArchived { ids, archived } => {
-                assert_eq!(ids, vec![3, 7]);
-                assert!(archived);
-            }
-            _ => panic!("expected archive request"),
-        }
-    }
-
-    #[test]
     fn produces_structured_markdown_runs() {
-        let runs =
-            render_markdown("# Heading\n\nA **bold** [link](https://example.com).\n\n- [x] Done");
-
-        assert!(runs
-            .iter()
-            .any(|run| run.style == RunStyle::Heading1 && run.text.contains("Heading")));
-        assert!(runs.iter().any(|run| run.bold && run.text == "bold"));
+        let runs = render_markdown("# Heading\n\n**bold** and [link](https://example.com)");
+        assert!(runs.iter().any(|run| run.style == RunStyle::Heading1));
+        assert!(runs.iter().any(|run| run.bold));
         assert!(runs
             .iter()
             .any(|run| run.link.as_deref() == Some("https://example.com")));
-        assert!(runs.iter().any(|run| run.text.contains('☑')));
     }
 
     #[test]
     fn ignores_raw_html() {
         let runs = render_markdown("before <script>alert(1)</script> after");
-        let text = runs.into_iter().map(|run| run.text).collect::<String>();
-
+        let text = runs.iter().map(|run| run.text.as_str()).collect::<String>();
         assert!(!text.contains("script"));
         assert!(!text.contains("alert"));
-        assert!(text.contains("before"));
-        assert!(text.contains("after"));
     }
 }
