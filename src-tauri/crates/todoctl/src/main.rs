@@ -1,5 +1,5 @@
 use std::{env, path::PathBuf, process::ExitCode};
-use todo_core::{default_data_file, TodoPriority, TodoStore};
+use todo_core::{default_data_file, TodoCompletionState, TodoPriority, TodoStore};
 
 const HELP: &str = r#"todoctl — command-line control for Todo
 
@@ -20,6 +20,12 @@ Commands:
   result <id> <text>                     Set the optional completion result
   clear-result <id>                       Clear the completion result
   priority <id> <low|medium|high>         Set task priority
+  subtask-list <id> [--json]             List subtasks and their IDs
+  subtask-add <id> <title>                Add a subtask and print its ID
+  subtask-done <id> <subtask-id>          Mark a subtask completed
+  subtask-undo <id> <subtask-id>          Restore a subtask
+  subtask-edit <id> <subtask-id> <title>  Rename a subtask
+  subtask-delete <id> <subtask-id>        Delete a subtask
   delete <id>                            Delete a task
   complete-all                           Complete every unarchived task
   restore-all                            Restore every unarchived task
@@ -114,6 +120,39 @@ fn run() -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             Ok(())
         }
+        "subtask-list" => list_subtasks(&store, &args),
+        "subtask-add" => {
+            let id = id_argument(&args, 1)?;
+            let title = joined_argument(&args, 2, "subtask-add requires a title")?;
+            let todo = store
+                .add_subtask(id, title)
+                .map_err(|error| error.to_string())?;
+            let subtask = todo
+                .subtasks
+                .last()
+                .ok_or_else(|| "subtask was not created".to_owned())?;
+            println!("{}", subtask.id);
+            Ok(())
+        }
+        "subtask-done" => update_subtask_completed(&mut store, &args, true),
+        "subtask-undo" => update_subtask_completed(&mut store, &args, false),
+        "subtask-edit" => {
+            let id = id_argument(&args, 1)?;
+            let subtask_id = subtask_id_argument(&args, 2)?;
+            let title = joined_argument(&args, 3, "subtask-edit requires a title")?;
+            store
+                .update_subtask(id, subtask_id, Some(title), None)
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        "subtask-delete" => {
+            let id = id_argument(&args, 1)?;
+            let subtask_id = subtask_id_argument(&args, 2)?;
+            store
+                .delete_subtask(id, subtask_id)
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
         "delete" | "rm" => {
             let id = id_argument(&args, 1)?;
             store.delete(id).map_err(|error| error.to_string())?;
@@ -193,8 +232,8 @@ fn list(store: &TodoStore, args: &[String]) -> Result<(), String> {
         .list()
         .iter()
         .filter(|todo| match filter {
-            "active" => !todo.archived && !todo.completed,
-            "completed" => !todo.archived && todo.completed,
+            "active" => !todo.archived && !todo.is_completed(),
+            "completed" => !todo.archived && todo.is_completed(),
             "archived" => todo.archived,
             _ => true,
         })
@@ -212,10 +251,8 @@ fn list(store: &TodoStore, args: &[String]) -> Result<(), String> {
                 todo.id,
                 if todo.archived {
                     "archived"
-                } else if todo.completed {
-                    "done"
                 } else {
-                    "todo"
+                    completion_state_name(todo.completion_state())
                 },
                 priority_name(todo.priority),
                 display_title(todo)
@@ -250,7 +287,7 @@ fn show(store: &TodoStore, args: &[String]) -> Result<(), String> {
     }
 
     println!("ID: {}", todo.id);
-    println!("Status: {}", if todo.completed { "done" } else { "todo" });
+    println!("Status: {}", completion_state_name(todo.completion_state()));
     println!("Archived: {}", if todo.archived { "yes" } else { "no" });
     println!("Priority: {}", priority_name(todo.priority));
     println!("CreatedAtMs: {}", todo.created_at_ms);
@@ -265,6 +302,19 @@ fn show(store: &TodoStore, args: &[String]) -> Result<(), String> {
 {}",
         todo.completion_result
     );
+    println!(
+        "Subtasks: {}/{}",
+        todo.completed_subtask_count(),
+        todo.subtasks.len()
+    );
+    for subtask in &todo.subtasks {
+        println!(
+            "  {}	{}	{}",
+            subtask.id,
+            if subtask.completed { "done" } else { "todo" },
+            subtask.title
+        );
+    }
     Ok(())
 }
 
@@ -291,6 +341,50 @@ fn display_title(todo: &todo_core::Todo) -> String {
     }
 }
 
+fn list_subtasks(store: &TodoStore, args: &[String]) -> Result<(), String> {
+    let id = id_argument(args, 1)?;
+    let json = match args.get(2).map(String::as_str) {
+        None => false,
+        Some("--json") => true,
+        Some(option) => return Err(format!("unknown subtask-list option '{option}'")),
+    };
+    let todo = store
+        .list()
+        .iter()
+        .find(|todo| todo.id == id)
+        .ok_or_else(|| format!("task {id} was not found"))?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&todo.subtasks).map_err(|error| error.to_string())?
+        );
+    } else {
+        for subtask in &todo.subtasks {
+            println!(
+                "{}	{}	{}",
+                subtask.id,
+                if subtask.completed { "done" } else { "todo" },
+                subtask.title
+            );
+        }
+    }
+    Ok(())
+}
+
+fn update_subtask_completed(
+    store: &mut TodoStore,
+    args: &[String],
+    completed: bool,
+) -> Result<(), String> {
+    let id = id_argument(args, 1)?;
+    let subtask_id = subtask_id_argument(args, 2)?;
+    store
+        .update_subtask(id, subtask_id, None, Some(completed))
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn update_completed(store: &mut TodoStore, args: &[String], completed: bool) -> Result<(), String> {
     let id = id_argument(args, 1)?;
     store
@@ -308,6 +402,14 @@ fn update_archived(store: &mut TodoStore, args: &[String], archived: bool) -> Re
         .set_archived_for_ids(&[id], archived)
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn completion_state_name(state: TodoCompletionState) -> &'static str {
+    match state {
+        TodoCompletionState::Active => "todo",
+        TodoCompletionState::Partial => "partial",
+        TodoCompletionState::Completed => "done",
+    }
 }
 
 fn priority_name(priority: TodoPriority) -> &'static str {
@@ -335,6 +437,13 @@ fn id_argument(args: &[String], index: usize) -> Result<u64, String> {
         .ok_or_else(|| "task id is required".to_owned())?
         .parse::<u64>()
         .map_err(|_| "task id must be a positive integer".to_owned())
+}
+
+fn subtask_id_argument(args: &[String], index: usize) -> Result<u64, String> {
+    args.get(index)
+        .ok_or_else(|| "subtask id is required".to_owned())?
+        .parse::<u64>()
+        .map_err(|_| "subtask id must be a positive integer".to_owned())
 }
 
 fn joined_argument(args: &[String], start: usize, error: &str) -> Result<String, String> {

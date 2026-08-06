@@ -11,6 +11,8 @@ use std::{
 pub const MAX_TITLE_LEN: usize = 240;
 pub const MAX_CONTENT_LEN: usize = 25_000;
 pub const MAX_COMPLETION_RESULT_LEN: usize = 10_000;
+pub const MAX_SUBTASK_TITLE_LEN: usize = 240;
+pub const MAX_SUBTASKS: usize = 500;
 pub const APP_IDENTIFIER: &str = "com.xycdev.todo";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -32,6 +34,22 @@ impl TodoPriority {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TodoCompletionState {
+    Active,
+    Partial,
+    Completed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Subtask {
+    pub id: u64,
+    pub title: String,
+    pub completed: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Todo {
@@ -45,9 +63,62 @@ pub struct Todo {
     pub priority: TodoPriority,
     #[serde(default)]
     pub archived: bool,
+    #[serde(default)]
+    pub subtasks: Vec<Subtask>,
     pub completed: bool,
     #[serde(default)]
     pub created_at_ms: i64,
+}
+
+impl Todo {
+    pub fn completion_state(&self) -> TodoCompletionState {
+        if self.subtasks.is_empty() {
+            return if self.completed {
+                TodoCompletionState::Completed
+            } else {
+                TodoCompletionState::Active
+            };
+        }
+
+        let completed = self.completed_subtask_count();
+        if completed == 0 {
+            TodoCompletionState::Active
+        } else if completed == self.subtasks.len() {
+            TodoCompletionState::Completed
+        } else {
+            TodoCompletionState::Partial
+        }
+    }
+
+    pub fn is_completed(&self) -> bool {
+        self.completion_state() == TodoCompletionState::Completed
+    }
+
+    pub fn completed_subtask_count(&self) -> usize {
+        self.subtasks
+            .iter()
+            .filter(|subtask| subtask.completed)
+            .count()
+    }
+
+    fn set_completed(&mut self, completed: bool) -> bool {
+        let changed = self.completed != completed
+            || self
+                .subtasks
+                .iter()
+                .any(|subtask| subtask.completed != completed);
+        for subtask in &mut self.subtasks {
+            subtask.completed = completed;
+        }
+        self.completed = completed;
+        changed
+    }
+
+    fn sync_completed_from_subtasks(&mut self) {
+        if !self.subtasks.is_empty() {
+            self.completed = self.subtasks.iter().all(|subtask| subtask.completed);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -58,6 +129,10 @@ pub enum StoreError {
     TitleTooLong,
     ContentTooLong,
     CompletionResultTooLong,
+    InvalidSubtaskTitle,
+    SubtaskTitleTooLong,
+    TooManySubtasks,
+    SubtaskNotFound { todo_id: u64, subtask_id: u64 },
     EmptyTodo,
     NotFound(u64),
     DataDirectoryUnavailable,
@@ -77,6 +152,18 @@ impl fmt::Display for StoreError {
                 f,
                 "completion result cannot exceed {MAX_COMPLETION_RESULT_LEN} characters"
             ),
+            Self::InvalidSubtaskTitle => write!(f, "subtask title cannot be empty"),
+            Self::SubtaskTitleTooLong => write!(
+                f,
+                "subtask title cannot exceed {MAX_SUBTASK_TITLE_LEN} characters"
+            ),
+            Self::TooManySubtasks => {
+                write!(f, "a task cannot contain more than {MAX_SUBTASKS} subtasks")
+            }
+            Self::SubtaskNotFound {
+                todo_id,
+                subtask_id,
+            } => write!(f, "subtask {subtask_id} was not found in task {todo_id}"),
             Self::EmptyTodo => write!(f, "task title and content cannot both be empty"),
             Self::NotFound(id) => write!(f, "task {id} was not found"),
             Self::DataDirectoryUnavailable => {
@@ -149,6 +236,7 @@ impl TodoStore {
             completion_result: String::new(),
             priority: TodoPriority::Low,
             archived: false,
+            subtasks: Vec::new(),
             completed: false,
             created_at_ms: now_ms(),
         };
@@ -193,13 +281,103 @@ impl TodoStore {
             todo.priority = priority;
         }
         if let Some(completed) = completed {
-            todo.completed = completed;
+            todo.set_completed(completed);
         }
 
         if todo.title.is_empty() && todo.content.is_empty() {
             return Err(StoreError::EmptyTodo);
         }
 
+        let updated = todo.clone();
+        self.persist()?;
+        Ok(updated)
+    }
+
+    pub fn add_subtask(&mut self, todo_id: u64, title: String) -> Result<Todo, StoreError> {
+        let _lock = self.lock_exclusive()?;
+        self.reload()?;
+        let title = normalize_subtask_title(title)?;
+        let todo = self
+            .todos
+            .iter_mut()
+            .find(|todo| todo.id == todo_id)
+            .ok_or(StoreError::NotFound(todo_id))?;
+        if todo.subtasks.len() >= MAX_SUBTASKS {
+            return Err(StoreError::TooManySubtasks);
+        }
+
+        let id = todo
+            .subtasks
+            .iter()
+            .map(|subtask| subtask.id)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        todo.subtasks.push(Subtask {
+            id,
+            title,
+            completed: false,
+        });
+        todo.sync_completed_from_subtasks();
+        let updated = todo.clone();
+        self.persist()?;
+        Ok(updated)
+    }
+
+    pub fn update_subtask(
+        &mut self,
+        todo_id: u64,
+        subtask_id: u64,
+        title: Option<String>,
+        completed: Option<bool>,
+    ) -> Result<Todo, StoreError> {
+        let _lock = self.lock_exclusive()?;
+        self.reload()?;
+        let title = title.map(normalize_subtask_title).transpose()?;
+        let todo = self
+            .todos
+            .iter_mut()
+            .find(|todo| todo.id == todo_id)
+            .ok_or(StoreError::NotFound(todo_id))?;
+        let subtask = todo
+            .subtasks
+            .iter_mut()
+            .find(|subtask| subtask.id == subtask_id)
+            .ok_or(StoreError::SubtaskNotFound {
+                todo_id,
+                subtask_id,
+            })?;
+
+        if let Some(title) = title {
+            subtask.title = title;
+        }
+        if let Some(completed) = completed {
+            subtask.completed = completed;
+        }
+        todo.sync_completed_from_subtasks();
+        let updated = todo.clone();
+        self.persist()?;
+        Ok(updated)
+    }
+
+    pub fn delete_subtask(&mut self, todo_id: u64, subtask_id: u64) -> Result<Todo, StoreError> {
+        let _lock = self.lock_exclusive()?;
+        self.reload()?;
+        let todo = self
+            .todos
+            .iter_mut()
+            .find(|todo| todo.id == todo_id)
+            .ok_or(StoreError::NotFound(todo_id))?;
+        let index = todo
+            .subtasks
+            .iter()
+            .position(|subtask| subtask.id == subtask_id)
+            .ok_or(StoreError::SubtaskNotFound {
+                todo_id,
+                subtask_id,
+            })?;
+        todo.subtasks.remove(index);
+        todo.sync_completed_from_subtasks();
         let updated = todo.clone();
         self.persist()?;
         Ok(updated)
@@ -222,7 +400,8 @@ impl TodoStore {
         let _lock = self.lock_exclusive()?;
         self.reload()?;
         let before = self.todos.len();
-        self.todos.retain(|todo| !todo.completed || todo.archived);
+        self.todos
+            .retain(|todo| !todo.is_completed() || todo.archived);
         let removed = before - self.todos.len();
         if removed > 0 {
             self.persist()?;
@@ -267,7 +446,7 @@ impl TodoStore {
         self.reload()?;
         let mut changed = 0;
         for todo in &mut self.todos {
-            if todo.completed && !todo.archived {
+            if todo.is_completed() && !todo.archived {
                 todo.archived = true;
                 changed += 1;
             }
@@ -299,8 +478,7 @@ impl TodoStore {
         self.reload()?;
         let mut changed = 0;
         for todo in &mut self.todos {
-            if !todo.archived && todo.completed != completed {
-                todo.completed = completed;
+            if !todo.archived && todo.set_completed(completed) {
                 changed += 1;
             }
         }
@@ -381,7 +559,11 @@ fn read_todos(path: &Path) -> Result<Vec<Todo>, StoreError> {
         return Ok(Vec::new());
     }
     let file = File::open(path)?;
-    Ok(serde_json::from_reader(BufReader::new(file))?)
+    let mut todos: Vec<Todo> = serde_json::from_reader(BufReader::new(file))?;
+    for todo in &mut todos {
+        todo.sync_completed_from_subtasks();
+    }
+    Ok(todos)
 }
 
 fn migrate_created_at(path: &Path, todos: &mut Vec<Todo>) -> Result<(), StoreError> {
@@ -493,6 +675,17 @@ fn normalize_completion_result(result: String) -> Result<String, StoreError> {
     Ok(result.to_owned())
 }
 
+fn normalize_subtask_title(title: String) -> Result<String, StoreError> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(StoreError::InvalidSubtaskTitle);
+    }
+    if title.chars().count() > MAX_SUBTASK_TITLE_LEN {
+        return Err(StoreError::SubtaskTitleTooLong);
+    }
+    Ok(title.to_owned())
+}
+
 fn temporary_path(path: &Path) -> PathBuf {
     let file_name = path
         .file_name()
@@ -528,6 +721,14 @@ mod tests {
             normalize_title("x".repeat(MAX_TITLE_LEN + 1)),
             Err(StoreError::TitleTooLong)
         ));
+        assert!(matches!(
+            normalize_subtask_title("   ".to_owned()),
+            Err(StoreError::InvalidSubtaskTitle)
+        ));
+        assert!(matches!(
+            normalize_subtask_title("x".repeat(MAX_SUBTASK_TITLE_LEN + 1)),
+            Err(StoreError::SubtaskTitleTooLong)
+        ));
     }
 
     #[test]
@@ -556,6 +757,7 @@ mod tests {
                 completion_result: String::new(),
                 priority: TodoPriority::Low,
                 archived: false,
+                subtasks: Vec::new(),
                 completed: true,
                 created_at_ms: first.created_at_ms,
             }]
@@ -781,6 +983,159 @@ mod tests {
     }
 
     #[test]
+    fn derives_parent_completion_from_subtasks() {
+        let path = test_path("subtask-status");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let todo = store
+            .add("Release".to_owned())
+            .expect("todo should be added");
+
+        let todo = store
+            .add_subtask(todo.id, "Build".to_owned())
+            .expect("first subtask should be added");
+        let todo = store
+            .add_subtask(todo.id, "Test".to_owned())
+            .expect("second subtask should be added");
+        assert_eq!(todo.completion_state(), TodoCompletionState::Active);
+        assert!(!todo.completed);
+
+        let first_id = todo.subtasks[0].id;
+        let second_id = todo.subtasks[1].id;
+        let todo = store
+            .update_subtask(todo.id, first_id, None, Some(true))
+            .expect("first subtask should complete");
+        assert_eq!(todo.completion_state(), TodoCompletionState::Partial);
+        assert_eq!(todo.completed_subtask_count(), 1);
+        assert!(!todo.completed);
+
+        let todo = store
+            .update_subtask(todo.id, second_id, None, Some(true))
+            .expect("second subtask should complete");
+        assert_eq!(todo.completion_state(), TodoCompletionState::Completed);
+        assert!(todo.completed);
+
+        let reloaded = TodoStore::load(path.clone()).expect("store should reload");
+        assert_eq!(
+            reloaded.list()[0].completion_state(),
+            TodoCompletionState::Completed
+        );
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn parent_completion_cascades_to_subtasks() {
+        let path = test_path("subtask-cascade");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let todo = store
+            .add("Release".to_owned())
+            .expect("todo should be added");
+        store
+            .add_subtask(todo.id, "Build".to_owned())
+            .expect("first subtask should be added");
+        store
+            .add_subtask(todo.id, "Test".to_owned())
+            .expect("second subtask should be added");
+
+        let completed = store
+            .update(todo.id, None, None, None, None, Some(true))
+            .expect("parent should complete");
+        assert!(completed.subtasks.iter().all(|subtask| subtask.completed));
+        assert!(completed.completed);
+
+        let restored = store
+            .update(todo.id, None, None, None, None, Some(false))
+            .expect("parent should restore");
+        assert!(restored.subtasks.iter().all(|subtask| !subtask.completed));
+        assert!(!restored.completed);
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn restore_all_clears_partially_completed_subtasks() {
+        let path = test_path("subtask-restore-all");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let todo = store
+            .add("Release".to_owned())
+            .expect("todo should be added");
+        let todo = store
+            .add_subtask(todo.id, "Build".to_owned())
+            .expect("first subtask should be added");
+        let todo = store
+            .add_subtask(todo.id, "Test".to_owned())
+            .expect("second subtask should be added");
+        store
+            .update_subtask(todo.id, todo.subtasks[0].id, None, Some(true))
+            .expect("first subtask should complete");
+
+        assert_eq!(
+            store.set_all_completed(false).expect("restore should work"),
+            1
+        );
+        let restored = &store.list()[0];
+        assert_eq!(restored.completion_state(), TodoCompletionState::Active);
+        assert!(restored.subtasks.iter().all(|subtask| !subtask.completed));
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn edits_and_deletes_subtasks_by_id() {
+        let path = test_path("subtask-mutations");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let todo = store
+            .add("Release".to_owned())
+            .expect("todo should be added");
+        let todo = store
+            .add_subtask(todo.id, "Build".to_owned())
+            .expect("subtask should be added");
+        let subtask_id = todo.subtasks[0].id;
+
+        let edited = store
+            .update_subtask(
+                todo.id,
+                subtask_id,
+                Some("Build package".to_owned()),
+                Some(true),
+            )
+            .expect("subtask should update");
+        assert_eq!(edited.subtasks[0].title, "Build package");
+        assert!(edited.subtasks[0].completed);
+
+        let deleted = store
+            .delete_subtask(todo.id, subtask_id)
+            .expect("subtask should delete");
+        assert!(deleted.subtasks.is_empty());
+        assert!(deleted.completed);
+        assert!(matches!(
+            store.update_subtask(todo.id, subtask_id, None, Some(false)),
+            Err(StoreError::SubtaskNotFound { .. })
+        ));
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn completed_task_queries_use_derived_subtask_state() {
+        let path = test_path("subtask-bulk");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let todo = store
+            .add("Release".to_owned())
+            .expect("todo should be added");
+        let todo = store
+            .add_subtask(todo.id, "Build".to_owned())
+            .expect("subtask should be added");
+        let subtask_id = todo.subtasks[0].id;
+
+        assert_eq!(
+            store.archive_completed().expect("nothing should archive"),
+            0
+        );
+        store
+            .update_subtask(todo.id, subtask_id, None, Some(true))
+            .expect("subtask should complete");
+        assert_eq!(store.archive_completed().expect("task should archive"), 1);
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
     fn migrates_legacy_todos_with_a_persisted_creation_time() {
         let path = test_path("legacy-created-at");
         fs::write(
@@ -794,6 +1149,7 @@ mod tests {
         assert!(store.list()[0].completion_result.is_empty());
         assert_eq!(store.list()[0].priority, TodoPriority::Low);
         assert!(!store.list()[0].archived);
+        assert!(store.list()[0].subtasks.is_empty());
 
         let persisted = fs::read_to_string(&path).expect("migrated data should be readable");
         assert!(persisted.contains("createdAtMs"));

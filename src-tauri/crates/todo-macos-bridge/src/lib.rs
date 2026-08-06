@@ -6,7 +6,7 @@ use std::{
     os::raw::c_char,
     panic::{catch_unwind, AssertUnwindSafe},
 };
-use todo_core::{Todo, TodoPriority, TodoStore};
+use todo_core::{Todo, TodoCompletionState, TodoPriority, TodoStore};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "camelCase")]
@@ -29,6 +29,22 @@ enum Request {
     },
     Delete {
         id: u64,
+    },
+    AddSubtask {
+        id: u64,
+        title: String,
+    },
+    UpdateSubtask {
+        id: u64,
+        #[serde(rename = "subtaskId")]
+        subtask_id: u64,
+        title: Option<String>,
+        completed: Option<bool>,
+    },
+    DeleteSubtask {
+        id: u64,
+        #[serde(rename = "subtaskId")]
+        subtask_id: u64,
     },
     SetArchived {
         ids: Vec<u64>,
@@ -54,6 +70,9 @@ struct TodoSummary {
     title: String,
     subtitle: String,
     completed: bool,
+    completion_state: TodoCompletionState,
+    subtask_count: usize,
+    completed_subtask_count: usize,
     priority: TodoPriority,
     archived: bool,
     created_at_ms: i64,
@@ -212,6 +231,32 @@ fn handle_request(request: &str) -> Result<Value, String> {
             store.delete(id).map_err(|error| error.to_string())?;
             Ok(Value::Bool(true))
         }
+        Request::AddSubtask { id, title } => {
+            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let todo = store
+                .add_subtask(id, title)
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(todo).map_err(|error| error.to_string())
+        }
+        Request::UpdateSubtask {
+            id,
+            subtask_id,
+            title,
+            completed,
+        } => {
+            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let todo = store
+                .update_subtask(id, subtask_id, title, completed)
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(todo).map_err(|error| error.to_string())
+        }
+        Request::DeleteSubtask { id, subtask_id } => {
+            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let todo = store
+                .delete_subtask(id, subtask_id)
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(todo).map_err(|error| error.to_string())
+        }
         Request::SetArchived { ids, archived } => {
             let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
             let count = store
@@ -279,7 +324,10 @@ fn todo_summary(todo: &Todo) -> TodoSummary {
         } else {
             truncate(&subtitle, 76)
         },
-        completed: todo.completed,
+        completed: todo.is_completed(),
+        completion_state: todo.completion_state(),
+        subtask_count: todo.subtasks.len(),
+        completed_subtask_count: todo.completed_subtask_count(),
         priority: todo.priority,
         archived: todo.archived,
         created_at_ms: todo.created_at_ms,
@@ -613,6 +661,18 @@ mod tests {
             completion_result: "Verified output".to_owned(),
             priority: TodoPriority::High,
             archived: true,
+            subtasks: vec![
+                todo_core::Subtask {
+                    id: 1,
+                    title: "Build".to_owned(),
+                    completed: true,
+                },
+                todo_core::Subtask {
+                    id: 2,
+                    title: "Test".to_owned(),
+                    completed: false,
+                },
+            ],
             completed: false,
             created_at_ms: 1_234,
         });
@@ -621,6 +681,10 @@ mod tests {
         assert_eq!(summary.subtitle, "More detail here");
         assert_eq!(summary.priority, TodoPriority::High);
         assert!(summary.archived);
+        assert_eq!(summary.completion_state, TodoCompletionState::Partial);
+        assert_eq!(summary.subtask_count, 2);
+        assert_eq!(summary.completed_subtask_count, 1);
+        assert!(!summary.completed);
         assert_eq!(summary.created_at_ms, 1_234);
     }
 
@@ -657,6 +721,31 @@ mod tests {
             }
             _ => panic!("expected update request"),
         }
+    }
+
+    #[test]
+    fn accepts_subtask_requests() {
+        let add: Request =
+            serde_json::from_str(r#"{"command":"addSubtask","id":9,"title":"Run tests"}"#)
+                .expect("add subtask request should parse");
+        assert!(matches!(
+            add,
+            Request::AddSubtask { id: 9, ref title } if title == "Run tests"
+        ));
+
+        let update: Request = serde_json::from_str(
+            r#"{"command":"updateSubtask","id":9,"subtaskId":2,"completed":true}"#,
+        )
+        .expect("update subtask request should parse");
+        assert!(matches!(
+            update,
+            Request::UpdateSubtask {
+                id: 9,
+                subtask_id: 2,
+                completed: Some(true),
+                ..
+            }
+        ));
     }
 
     #[test]
