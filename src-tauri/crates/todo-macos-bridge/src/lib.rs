@@ -52,6 +52,13 @@ enum Request {
         #[serde(rename = "subtaskId")]
         subtask_id: u64,
     },
+    ReorderParents {
+        ids: Vec<u64>,
+    },
+    ReorderSubtasks {
+        id: u64,
+        ids: Vec<u64>,
+    },
     SetArchived {
         ids: Vec<u64>,
         archived: bool,
@@ -318,6 +325,20 @@ fn handle_request(request: &str) -> Result<Value, String> {
             }
             store
                 .delete_task(subtask_id)
+                .map_err(|error| error.to_string())?;
+            Ok(Value::Bool(true))
+        }
+        Request::ReorderParents { ids } => {
+            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            store
+                .reorder_parents(&ids)
+                .map_err(|error| error.to_string())?;
+            Ok(Value::Bool(true))
+        }
+        Request::ReorderSubtasks { id, ids } => {
+            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            store
+                .reorder_subtasks(id, &ids)
                 .map_err(|error| error.to_string())?;
             Ok(Value::Bool(true))
         }
@@ -942,6 +963,22 @@ mod tests {
                 completed: Some(true),
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn parses_two_level_reorder_requests() {
+        let parents: Request =
+            serde_json::from_str(r#"{"command":"reorderParents","ids":[3,1,2]}"#)
+                .expect("parent reorder should parse");
+        assert!(matches!(parents, Request::ReorderParents { ids } if ids == vec![3, 1, 2]));
+
+        let children: Request =
+            serde_json::from_str(r#"{"command":"reorderSubtasks","id":7,"ids":[10,8,9]}"#)
+                .expect("child reorder should parse");
+        assert!(matches!(
+            children,
+            Request::ReorderSubtasks { id: 7, ids } if ids == vec![10, 8, 9]
         ));
     }
 

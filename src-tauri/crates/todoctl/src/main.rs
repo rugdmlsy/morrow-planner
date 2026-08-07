@@ -28,6 +28,7 @@ Commands:
                                          Rename a child
   subtask-delete <parent-id> <child-id>  Delete a child; one child must remain
   delete <selector>                      Delete a parent or child task
+  move <selector> <position>             Move a parent, or a P##N child within its parent
   complete-all                           Complete every unarchived parent and child
   restore-all                            Restore every unarchived parent and child
   archive-completed                      Archive completed parent tasks
@@ -164,6 +165,7 @@ fn run() -> Result<(), String> {
             store.delete_task(id).map_err(|error| error.to_string())?;
             Ok(())
         }
+        "move" => move_task(&mut store, &args),
         "complete-all" => {
             let changed = store
                 .set_all_completed(true)
@@ -417,6 +419,67 @@ fn list_subtasks(store: &TodoStore, args: &[String]) -> Result<(), String> {
             );
         }
     }
+    Ok(())
+}
+
+fn move_task(store: &mut TodoStore, args: &[String]) -> Result<(), String> {
+    let selector = args
+        .get(1)
+        .ok_or_else(|| "move requires a task selector".to_owned())?;
+    let id = resolve_task_selector(store, selector)?;
+    let position = args
+        .get(2)
+        .ok_or_else(|| "move requires a 1-based destination position".to_owned())?
+        .parse::<usize>()
+        .map_err(|_| "move position must be a positive integer".to_owned())?;
+    if position == 0 {
+        return Err("move position must be at least 1".to_owned());
+    }
+
+    let record = store
+        .task(id)
+        .ok_or_else(|| format!("task {selector} was not found"))?;
+    if let Some(parent_id) = record.parent_id {
+        let todo = store
+            .todo(parent_id)
+            .ok_or_else(|| format!("parent task {parent_id} was not found"))?;
+        if position > todo.subtasks.len() {
+            return Err(format!(
+                "child position {position} is outside 1..={}",
+                todo.subtasks.len()
+            ));
+        }
+        let mut ids = todo.subtasks.iter().map(|task| task.id).collect::<Vec<_>>();
+        reposition_id(&mut ids, id, position)?;
+        store
+            .reorder_subtasks(parent_id, &ids)
+            .map_err(|error| error.to_string())?;
+        println!("{parent_id}##{position}");
+        return Ok(());
+    }
+
+    if position > store.list().len() {
+        return Err(format!(
+            "parent position {position} is outside 1..={}",
+            store.list().len()
+        ));
+    }
+    let mut ids = store.list().iter().map(|todo| todo.id).collect::<Vec<_>>();
+    reposition_id(&mut ids, id, position)?;
+    store
+        .reorder_parents(&ids)
+        .map_err(|error| error.to_string())?;
+    println!("{position}");
+    Ok(())
+}
+
+fn reposition_id(ids: &mut Vec<u64>, id: u64, position: usize) -> Result<(), String> {
+    let source = ids
+        .iter()
+        .position(|candidate| *candidate == id)
+        .ok_or_else(|| format!("task {id} was not found in its current order"))?;
+    let value = ids.remove(source);
+    ids.insert(position - 1, value);
     Ok(())
 }
 

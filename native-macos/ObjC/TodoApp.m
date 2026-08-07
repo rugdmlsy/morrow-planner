@@ -7,6 +7,7 @@ extern char *todo_bridge_call(const char *request);
 extern void todo_bridge_free(char *value);
 
 static NSString *const TodoErrorDomain = @"com.xycdev.todo";
+static NSString *const TodoTaskRowPasteboardType = @"com.xycdev.todo.task-row";
 
 static id BridgeCall(NSDictionary *request, NSError **error) {
     @autoreleasepool {
@@ -962,6 +963,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @property(nullable) NSNumber *selectedID;
 @property(nullable) NSNumber *selectedParentID;
 @property BOOL selectedIsSubtask;
+@property(nullable) NSDictionary *draggedRow;
 @property(nullable) NSDictionary *currentTodo;
 @property NSString *editorSnapshot;
 @property NSString *completionResultSnapshot;
@@ -998,6 +1000,9 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.detail.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [self.split addArrangedSubview:self.sidebar]; [self.split addArrangedSubview:self.detail]; self.view = self.split;
     self.sidebar.tableView.delegate = self; self.sidebar.tableView.dataSource = self;
+    [self.sidebar.tableView registerForDraggedTypes:@[TodoTaskRowPasteboardType]];
+    [self.sidebar.tableView setDraggingSourceOperationMask:NSDragOperationMove forLocal:YES];
+    [self.sidebar.tableView setDraggingSourceOperationMask:NSDragOperationNone forLocal:NO];
     __weak typeof(self) weakSelf = self;
     self.sidebar.createTaskButton.handler = ^{ [weakSelf addEditableTask]; };
     self.sidebar.languageControl.changeHandler = ^(NSInteger index) { [weakSelf changeLanguage:(TodoLanguage)index]; };
@@ -1176,6 +1181,169 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
     return self.rows.count;
 }
+- (BOOL)tableView:(NSTableView *)tableView
+writeRowsWithIndexes:(NSIndexSet *)rowIndexes
+toPasteboard:(NSPasteboard *)pasteboard {
+    if (self.sortMode != TodoSortModeOriginal || rowIndexes.count != 1) return NO;
+    NSInteger row = rowIndexes.firstIndex;
+    if (row < 0 || row >= self.rows.count) return NO;
+    self.draggedRow = self.rows[row];
+    [pasteboard declareTypes:@[TodoTaskRowPasteboardType] owner:nil];
+    return [pasteboard setString:@"move" forType:TodoTaskRowPasteboardType];
+}
+- (NSArray<NSNumber *> *)orderByMovingID:(NSNumber *)movingID
+                              visibleIDs:(NSArray<NSNumber *> *)visibleIDs
+                                 fullIDs:(NSArray<NSNumber *> *)fullIDs
+                        insertionIndex:(NSInteger)insertionIndex {
+    NSUInteger source = [visibleIDs indexOfObject:movingID];
+    if (source == NSNotFound) return nil;
+    NSInteger destination = MAX(0, MIN(insertionIndex, (NSInteger)visibleIDs.count));
+    NSMutableArray<NSNumber *> *reorderedVisible = [visibleIDs mutableCopy];
+    [reorderedVisible removeObjectAtIndex:source];
+    if ((NSInteger)source < destination) destination--;
+    destination = MAX(0, MIN(destination, (NSInteger)reorderedVisible.count));
+    [reorderedVisible insertObject:movingID atIndex:destination];
+
+    NSSet<NSNumber *> *visibleSet = [NSSet setWithArray:visibleIDs];
+    NSMutableArray<NSNumber *> *merged = [NSMutableArray arrayWithCapacity:fullIDs.count];
+    NSUInteger replacement = 0;
+    for (NSNumber *taskID in fullIDs) {
+        if ([visibleSet containsObject:taskID]) {
+            [merged addObject:reorderedVisible[replacement++]];
+        } else {
+            [merged addObject:taskID];
+        }
+    }
+    return merged;
+}
+- (NSInteger)parentInsertionIndexForDropRow:(NSInteger)dropRow {
+    NSInteger insertion = 0;
+    NSInteger limit = MAX(0, MIN(dropRow, (NSInteger)self.rows.count));
+    for (NSInteger row = 0; row < limit; row++) {
+        if ([self.rows[row][@"kind"] isEqualToString:@"parent"]) insertion++;
+    }
+    return insertion;
+}
+- (NSInteger)rowForParentInsertionIndex:(NSInteger)insertionIndex {
+    NSInteger parentIndex = 0;
+    for (NSInteger row = 0; row < self.rows.count; row++) {
+        if (![self.rows[row][@"kind"] isEqualToString:@"parent"]) continue;
+        if (parentIndex == insertionIndex) return row;
+        parentIndex++;
+    }
+    return self.rows.count;
+}
+- (BOOL)childDropRow:(NSInteger)dropRow
+             parent:(NSNumber *)parentID
+      insertionIndex:(NSInteger *)insertionIndex
+       normalizedRow:(NSInteger *)normalizedRow {
+    NSInteger parentRow = NSNotFound;
+    NSInteger groupEnd = self.rows.count;
+    for (NSInteger row = 0; row < self.rows.count; row++) {
+        NSDictionary *summary = self.rows[row];
+        if ([summary[@"kind"] isEqualToString:@"parent"] && [summary[@"id"] isEqual:parentID]) {
+            parentRow = row;
+            for (NSInteger next = row + 1; next < self.rows.count; next++) {
+                if ([self.rows[next][@"kind"] isEqualToString:@"parent"]) {
+                    groupEnd = next;
+                    break;
+                }
+            }
+            break;
+        }
+    }
+    if (parentRow == NSNotFound) return NO;
+    NSInteger candidate = MAX(parentRow + 1, MIN(dropRow, groupEnd));
+    if (dropRow < parentRow || dropRow > groupEnd) return NO;
+    NSInteger insertion = 0;
+    for (NSInteger row = parentRow + 1; row < candidate; row++) {
+        NSDictionary *summary = self.rows[row];
+        if ([summary[@"kind"] isEqualToString:@"subtask"] && [summary[@"parentId"] isEqual:parentID]) {
+            insertion++;
+        }
+    }
+    if (insertionIndex) *insertionIndex = insertion;
+    if (normalizedRow) *normalizedRow = candidate;
+    return YES;
+}
+- (NSDragOperation)tableView:(NSTableView *)tableView
+                validateDrop:(id<NSDraggingInfo>)info
+                 proposedRow:(NSInteger)row
+       proposedDropOperation:(NSTableViewDropOperation)dropOperation {
+    if (self.sortMode != TodoSortModeOriginal || !self.draggedRow) return NSDragOperationNone;
+    if (![info.draggingPasteboard availableTypeFromArray:@[TodoTaskRowPasteboardType]]) return NSDragOperationNone;
+    BOOL child = [self.draggedRow[@"kind"] isEqualToString:@"subtask"];
+    NSInteger normalizedRow = row;
+    if (child) {
+        NSNumber *parentID = self.draggedRow[@"parentId"];
+        if (![parentID isKindOfClass:NSNumber.class]
+            || ![self childDropRow:row parent:parentID insertionIndex:nil normalizedRow:&normalizedRow]) {
+            return NSDragOperationNone;
+        }
+    } else {
+        NSInteger insertion = [self parentInsertionIndexForDropRow:row];
+        normalizedRow = [self rowForParentInsertionIndex:insertion];
+    }
+    [tableView setDropRow:normalizedRow dropOperation:NSTableViewDropAbove];
+    return NSDragOperationMove;
+}
+- (BOOL)applyDraggedRow:(NSDictionary *)draggedRow dropRow:(NSInteger)dropRow {
+    if (self.sortMode != TodoSortModeOriginal || !draggedRow) return NO;
+    if (![self saveIfNeeded]) return NO;
+    NSError *error = nil;
+    BOOL child = [draggedRow[@"kind"] isEqualToString:@"subtask"];
+    NSDictionary *request = nil;
+
+    if (child) {
+        NSNumber *parentID = draggedRow[@"parentId"];
+        NSNumber *childID = draggedRow[@"id"];
+        NSInteger insertion = 0;
+        if (![parentID isKindOfClass:NSNumber.class] || ![childID isKindOfClass:NSNumber.class]
+            || ![self childDropRow:dropRow parent:parentID insertionIndex:&insertion normalizedRow:nil]) {
+            return NO;
+        }
+        NSDictionary *parent = [self parentSummaryForTaskID:parentID];
+        NSArray<NSDictionary *> *allChildren = [parent[@"subtasks"] isKindOfClass:NSArray.class] ? parent[@"subtasks"] : @[];
+        NSMutableArray<NSNumber *> *fullIDs = [NSMutableArray arrayWithCapacity:allChildren.count];
+        for (NSDictionary *summary in allChildren) if ([summary[@"id"] isKindOfClass:NSNumber.class]) [fullIDs addObject:summary[@"id"]];
+        NSMutableArray<NSNumber *> *visibleIDs = [NSMutableArray array];
+        for (NSDictionary *summary in self.rows) {
+            if ([summary[@"kind"] isEqualToString:@"subtask"] && [summary[@"parentId"] isEqual:parentID]) {
+                [visibleIDs addObject:summary[@"id"]];
+            }
+        }
+        NSArray<NSNumber *> *orderedIDs = [self orderByMovingID:childID visibleIDs:visibleIDs fullIDs:fullIDs insertionIndex:insertion];
+        if (!orderedIDs) return NO;
+        request = @{@"command": @"reorderSubtasks", @"id": parentID, @"ids": orderedIDs};
+    } else {
+        NSNumber *parentID = draggedRow[@"id"];
+        if (![parentID isKindOfClass:NSNumber.class]) return NO;
+        NSInteger insertion = [self parentInsertionIndexForDropRow:dropRow];
+        NSMutableArray<NSNumber *> *fullIDs = [NSMutableArray arrayWithCapacity:self.summaries.count];
+        for (NSDictionary *summary in self.summaries) if ([summary[@"id"] isKindOfClass:NSNumber.class]) [fullIDs addObject:summary[@"id"]];
+        NSMutableArray<NSNumber *> *visibleIDs = [NSMutableArray arrayWithCapacity:self.filtered.count];
+        for (NSDictionary *summary in self.filtered) if ([summary[@"id"] isKindOfClass:NSNumber.class]) [visibleIDs addObject:summary[@"id"]];
+        NSArray<NSNumber *> *orderedIDs = [self orderByMovingID:parentID visibleIDs:visibleIDs fullIDs:fullIDs insertionIndex:insertion];
+        if (!orderedIDs) return NO;
+        request = @{@"command": @"reorderParents", @"ids": orderedIDs};
+    }
+
+    if (!BridgeCall(request, &error)) {
+        [self showError:error];
+        [self reloadSummaries];
+        return NO;
+    }
+    [self reloadSummaries];
+    return YES;
+}
+- (BOOL)tableView:(NSTableView *)tableView
+        acceptDrop:(id<NSDraggingInfo>)info
+               row:(NSInteger)row
+     dropOperation:(NSTableViewDropOperation)dropOperation {
+    NSDictionary *draggedRow = self.draggedRow;
+    self.draggedRow = nil;
+    return [self applyDraggedRow:draggedRow dropRow:row];
+}
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
     if (row < 0 || row >= self.rows.count) return nil;
     NSDictionary *summary = self.rows[row];
@@ -1282,6 +1450,9 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         [self statusFilterTitle], [self dateFilterTitle], [self sortModeTitle]];
     self.sidebar.filterMenuButton.toolTip = summary;
     self.sidebar.filterMenuButton.accessibilityValue = summary;
+    self.sidebar.tableView.toolTip = self.sortMode == TodoSortModeOriginal
+        ? TodoLocalized(self.language, @"拖拽事项或子任务调整默认顺序", @"Drag projects or child tasks to change manual order")
+        : TodoLocalized(self.language, @"拖拽排序仅在“默认顺序”下可用", @"Drag reordering is available only in Original Order");
     [self.sidebar setNeedsLayout:YES];
 }
 - (NSMenu *)buildFilterMenu {
@@ -2310,6 +2481,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     NSString *benchmarkManagementAction = environment[@"TODO_BENCHMARK_MANAGEMENT_ACTION"];
     NSString *benchmarkRefreshAfterMs = environment[@"TODO_BENCHMARK_REFRESH_AFTER_MS"];
     NSString *benchmarkAddChildParentID = environment[@"TODO_BENCHMARK_ADD_CHILD_TO_PARENT_ID"];
+    NSString *benchmarkDragFromRow = environment[@"TODO_BENCHMARK_DRAG_FROM_ROW"];
+    NSString *benchmarkDragToRow = environment[@"TODO_BENCHMARK_DRAG_TO_ROW"];
     BOOL benchmarkDeleteCurrent = [environment[@"TODO_BENCHMARK_DELETE_CURRENT"] boolValue];
     if ([benchmarkStatusFilter isEqualToString:@"active"]) {
         self.filterIndex = 1;
@@ -2372,6 +2545,14 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     }
     if (benchmarkAddChildParentID.longLongValue > 0) {
         [self addSubtaskToParentID:@(benchmarkAddChildParentID.longLongValue)];
+    }
+    if (benchmarkDragFromRow.length && benchmarkDragToRow.length) {
+        NSInteger sourceRow = benchmarkDragFromRow.integerValue;
+        NSInteger destinationRow = benchmarkDragToRow.integerValue;
+        if (sourceRow >= 0 && sourceRow < self.rows.count) {
+            NSDictionary *draggedRow = self.rows[sourceRow];
+            [self applyDraggedRow:draggedRow dropRow:destinationRow];
+        }
     }
     if (benchmarkDeleteCurrent) {
         [self deleteCurrent];

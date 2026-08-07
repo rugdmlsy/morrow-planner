@@ -1,7 +1,7 @@
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env, fmt,
     fs::{self, File, OpenOptions},
     io::{self, BufReader, BufWriter, Write},
@@ -182,6 +182,7 @@ pub enum StoreError {
     LastSubtask,
     EmptyTodo,
     ParentTitleOnly(u64),
+    InvalidOrder,
     NotFound(u64),
     NotParent(u64),
     DataDirectoryUnavailable,
@@ -210,6 +211,7 @@ impl fmt::Display for StoreError {
                 f,
                 "parent task {id} only supports an optional title; edit a child task for content, completion result, or priority"
             ),
+            Self::InvalidOrder => write!(f, "task order does not match the current stored tasks"),
             Self::NotFound(id) => write!(f, "task {id} was not found"),
             Self::NotParent(id) => write!(f, "task {id} is not a parent task"),
             Self::DataDirectoryUnavailable => {
@@ -471,6 +473,51 @@ impl TodoStore {
         let removed = self.todos.remove(index);
         self.persist()?;
         Ok(removed)
+    }
+
+    pub fn reorder_parents(&mut self, ordered_ids: &[u64]) -> Result<(), StoreError> {
+        let _lock = self.lock_exclusive()?;
+        self.reload_locked()?;
+        if !same_ids(ordered_ids, self.todos.iter().map(|todo| todo.id)) {
+            return Err(StoreError::InvalidOrder);
+        }
+        if self
+            .todos
+            .iter()
+            .map(|todo| todo.id)
+            .eq(ordered_ids.iter().copied())
+        {
+            return Ok(());
+        }
+        reorder_by_ids(&mut self.todos, ordered_ids, |todo| todo.id);
+        self.persist()
+    }
+
+    pub fn reorder_subtasks(
+        &mut self,
+        parent_id: u64,
+        ordered_ids: &[u64],
+    ) -> Result<(), StoreError> {
+        let _lock = self.lock_exclusive()?;
+        self.reload_locked()?;
+        let todo = self
+            .todos
+            .iter_mut()
+            .find(|todo| todo.id == parent_id)
+            .ok_or(StoreError::NotParent(parent_id))?;
+        if !same_ids(ordered_ids, todo.subtasks.iter().map(|task| task.id)) {
+            return Err(StoreError::InvalidOrder);
+        }
+        if todo
+            .subtasks
+            .iter()
+            .map(|task| task.id)
+            .eq(ordered_ids.iter().copied())
+        {
+            return Ok(());
+        }
+        reorder_by_ids(&mut todo.subtasks, ordered_ids, |task| task.id);
+        self.persist()
     }
 
     pub fn clear_completed(&mut self) -> Result<usize, StoreError> {
@@ -837,6 +884,31 @@ fn task_fallback_title(task: &Task) -> String {
         .find(|line| !line.is_empty())
         .unwrap_or("Untitled")
         .to_owned()
+}
+
+fn same_ids<I>(ordered_ids: &[u64], existing_ids: I) -> bool
+where
+    I: IntoIterator<Item = u64>,
+{
+    let existing = existing_ids.into_iter().collect::<Vec<_>>();
+    if ordered_ids.len() != existing.len() {
+        return false;
+    }
+    let ordered = ordered_ids.iter().copied().collect::<HashSet<_>>();
+    let existing = existing.into_iter().collect::<HashSet<_>>();
+    ordered.len() == ordered_ids.len() && ordered == existing
+}
+
+fn reorder_by_ids<T, F>(items: &mut [T], ordered_ids: &[u64], id: F)
+where
+    F: Fn(&T) -> u64,
+{
+    let positions = ordered_ids
+        .iter()
+        .enumerate()
+        .map(|(index, task_id)| (*task_id, index))
+        .collect::<HashMap<_, _>>();
+    items.sort_by_key(|item| positions[&id(item)]);
 }
 
 fn persist_todos(path: &Path, todos: &[Todo]) -> Result<(), StoreError> {
@@ -1372,6 +1444,99 @@ Child result"
         assert_eq!(store.clear_completed().expect("completed should clear"), 1);
         assert!(store.todo(completed.id).is_none());
         assert!(store.todo(active.id).is_some());
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn reorders_parents_without_changing_task_identity() {
+        let path = test_path("reorder-parents");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let first = store.add("First".to_owned()).expect("first should add");
+        let second = store.add("Second".to_owned()).expect("second should add");
+        let third = store.add("Third".to_owned()).expect("third should add");
+
+        store
+            .reorder_parents(&[third.id, first.id, second.id])
+            .expect("parents should reorder");
+        assert_eq!(
+            store.list().iter().map(|todo| todo.id).collect::<Vec<_>>(),
+            vec![third.id, first.id, second.id]
+        );
+        assert_eq!(store.list()[1].subtasks[0].title, "First");
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn reorders_subtasks_and_updates_local_indexes() {
+        let path = test_path("reorder-subtasks");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let parent = store.add("One".to_owned()).expect("parent should add");
+        let first = parent.subtasks[0].id;
+        let second = store
+            .add_subtask(parent.id, "Two".to_owned())
+            .expect("second should add")
+            .task
+            .id;
+        let third = store
+            .add_subtask(parent.id, "Three".to_owned())
+            .expect("third should add")
+            .task
+            .id;
+
+        store
+            .reorder_subtasks(parent.id, &[third, first, second])
+            .expect("children should reorder");
+        let todo = store.todo(parent.id).expect("parent should remain");
+        assert_eq!(todo.child_index(third), Some(1));
+        assert_eq!(todo.child_index(first), Some(2));
+        assert_eq!(todo.child_index(second), Some(3));
+        assert_eq!(todo.subtasks[0].title, "Three");
+        assert_eq!(todo.effective_title(), "Three");
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn rejects_stale_or_duplicate_reorder_lists() {
+        let path = test_path("reorder-invalid");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let first = store.add("First".to_owned()).expect("first should add");
+        let second = store.add("Second".to_owned()).expect("second should add");
+        assert!(matches!(
+            store.reorder_parents(&[first.id, first.id]),
+            Err(StoreError::InvalidOrder)
+        ));
+        assert!(matches!(
+            store.reorder_parents(&[second.id]),
+            Err(StoreError::InvalidOrder)
+        ));
+        fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn newly_added_subtask_stays_at_the_bottom_of_manual_order() {
+        let path = test_path("append-child");
+        let mut store = TodoStore::load(path.clone()).expect("store should load");
+        let parent = store.add("First".to_owned()).expect("parent should add");
+        let second = store
+            .add_subtask(parent.id, "Second".to_owned())
+            .expect("second should add")
+            .task
+            .id;
+        let first = parent.subtasks[0].id;
+        store
+            .reorder_subtasks(parent.id, &[second, first])
+            .expect("children should reorder");
+        let third = store
+            .add_subtask(parent.id, "Third".to_owned())
+            .expect("third should add")
+            .task
+            .id;
+        let todo = store.todo(parent.id).expect("parent should remain");
+        assert_eq!(
+            todo.subtasks.iter().map(|task| task.id).collect::<Vec<_>>(),
+            vec![second, first, third]
+        );
+        assert_eq!(todo.child_index(third), Some(3));
         fs::remove_file(path).expect("test data should be removable");
     }
 

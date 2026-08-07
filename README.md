@@ -24,7 +24,9 @@ When a project has multiple children, the sidebar shows a parent row followed by
   ##3 Publish artifacts
 ```
 
-Child labels are local to their parent. They are displayed as `##1`, `##2`, and `##3`, rather than exposing unrelated global child numbers. Their shell selectors are `12##1`, `12##2`, and `12##3`. These local indexes remain stable under filtering and sorting; internal global IDs remain in the JSON data for persistence and backward compatibility.
+Child labels are local to their parent. They are displayed as `##1`, `##2`, and `##3`, rather than exposing unrelated global child numbers. Their shell selectors are `12##1`, `12##2`, and `12##3`. Filtering and derived sorting do not renumber them, but changing the manual child order does: moving the former `##3` to the top makes it `##1`. Internal global IDs remain in the JSON data for persistence and backward compatibility.
+
+In Original Order, rows can be reordered directly by dragging. Dragging a parent row moves the whole project, including every child. Dragging a child row changes only the order inside that parent and cannot reparent the child. When a filter hides some projects or children, those hidden records keep their stored slots while the visible peers are reordered. New children are appended to the bottom of their parent's manual order. Newest First and Priority First are derived views, so manual dragging is disabled while either sort is active.
 
 A multi-child parent is a grouping record, not another document. It has only an optional title. When the title is empty, the first child’s displayed title is used automatically. Selecting the parent opens a title-only editor; Markdown modes, completion result, and priority editing are hidden. Parent priority is derived from the highest child priority, and parent completion is derived from child completion.
 
@@ -41,7 +43,7 @@ Each child supports:
 
 The completion-result section is collapsible. Empty results start collapsed, non-empty results start expanded, and the document/result ratio can be changed by dragging the divider. Markdown is parsed by `pulldown-cmark`; Rust returns structured style runs and AppKit renders them without an HTML or JavaScript runtime.
 
-The sidebar combines status filtering, creation-time filtering, and sorting in one Filter / Sort menu. Parent context is retained when a matching child is shown. Local child indexes remain stable under filtering and sorting, so a child labeled `##2` does not become `##1` merely because its sibling is filtered out or reordered.
+The sidebar combines status filtering, creation-time filtering, and sorting in one Filter / Sort menu. Parent context is retained when a matching child is shown. Filtering or switching to a derived sort does not itself change stored order or local `##N` indexes; only an explicit manual reorder changes those indexes.
 
 Archive operations remain project-scoped. Archiving a parent hides all of its children. Deleting a compact one-child row from the native app removes the whole project rather than attempting to delete its required final child. Tasks changed by another process can be loaded with the refresh button or Command-R without restarting the app.
 
@@ -146,6 +148,15 @@ todoctl undo "$PARENT_ID##2"
 todoctl delete "$PARENT_ID##2"
 ```
 
+Manual order can also be changed from the shell. Positions are 1-based:
+
+```bash
+todoctl move 12 1       # move parent #12 to the top
+todoctl move 12##3 1    # move the third child to the top of parent #12
+```
+
+A child move changes its local `##N` selector. `subtask-add` always appends the new child after the existing manual child order.
+
 Other commands:
 
 ```bash
@@ -156,6 +167,7 @@ todoctl undo <parent-id>       # restores every child
 todoctl archive <parent-id>
 todoctl unarchive <parent-id>
 todoctl delete <parent-id>     # deletes the whole project
+todoctl move <selector> <position>
 todoctl complete-all
 todoctl restore-all
 todoctl archive-completed
