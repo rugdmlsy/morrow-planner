@@ -74,6 +74,7 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
 @property(nonatomic, copy) NSString *title;
 @property(nonatomic) LiteButtonStyle buttonStyle;
 @property(nonatomic, strong, nullable) NSColor *foregroundColor;
+@property(nonatomic) CGFloat titleFontSize;
 @property(nonatomic, copy, nullable) void (^handler)(void);
 - (instancetype)initWithTitle:(NSString *)title style:(LiteButtonStyle)style;
 @end
@@ -85,6 +86,7 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
     if ((self = [super initWithFrame:NSZeroRect])) {
         _title = [title copy];
         _buttonStyle = style;
+        _titleFontSize = 12.5;
         self.accessibilityElement = YES;
         self.accessibilityRole = NSAccessibilityButtonRole;
         self.accessibilityLabel = title;
@@ -99,8 +101,9 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
 }
 - (void)setButtonStyle:(LiteButtonStyle)buttonStyle { _buttonStyle = buttonStyle; self.needsDisplay = YES; }
 - (void)setForegroundColor:(NSColor *)foregroundColor { _foregroundColor = foregroundColor; self.needsDisplay = YES; }
+- (void)setTitleFontSize:(CGFloat)titleFontSize { _titleFontSize = MAX(8.0, titleFontSize); [self invalidateIntrinsicContentSize]; self.needsDisplay = YES; }
 - (NSSize)intrinsicContentSize {
-    NSFont *font = [NSFont systemFontOfSize:12.5 weight:self.buttonStyle == LiteButtonStylePrimary ? NSFontWeightSemibold : NSFontWeightMedium];
+    NSFont *font = [NSFont systemFontOfSize:self.titleFontSize weight:self.buttonStyle == LiteButtonStylePrimary ? NSFontWeightSemibold : NSFontWeightMedium];
     CGFloat width = ceil([self.title sizeWithAttributes:@{NSFontAttributeName: font}].width);
     CGFloat padding = (self.buttonStyle == LiteButtonStylePlain || self.buttonStyle == LiteButtonStyleDanger) ? 8 : 22;
     return NSMakeSize(width + padding, 30);
@@ -119,7 +122,7 @@ typedef NS_ENUM(NSInteger, LiteButtonStyle) {
         [[NSColor.selectedContentBackgroundColor colorWithAlphaComponent:0.12] setFill]; [path fill];
     }
 
-    NSFont *font = [NSFont systemFontOfSize:12.5 weight:self.buttonStyle == LiteButtonStylePrimary ? NSFontWeightSemibold : NSFontWeightMedium];
+    NSFont *font = [NSFont systemFontOfSize:self.titleFontSize weight:self.buttonStyle == LiteButtonStylePrimary ? NSFontWeightSemibold : NSFontWeightMedium];
     NSColor *color;
     if (!self.enabled) color = NSColor.disabledControlTextColor;
     else if (self.foregroundColor) color = self.foregroundColor;
@@ -403,7 +406,8 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
         _priorityLabel.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold];
         _priorityLabel.alignment = NSTextAlignmentCenter;
         _addButton = [[LiteButton alloc] initWithTitle:@"+" style:LiteButtonStylePlain];
-        _collapseButton = [[LiteButton alloc] initWithTitle:@"▾" style:LiteButtonStylePlain];
+        _collapseButton = [[LiteButton alloc] initWithTitle:@"▼" style:LiteButtonStylePlain];
+        _collapseButton.titleFontSize = 16.0;
         [self addSubview:_check];
         [self addSubview:_idLabel];
         [self addSubview:_titleLabel];
@@ -418,20 +422,21 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
     [super layout];
     CGFloat height = NSHeight(self.bounds);
     CGFloat indent = self.childRow ? 18.0 : 0.0;
-    CGFloat disclosureWidth = self.collapseButton.hidden ? 0.0 : 12.0;
-    if (!self.collapseButton.hidden) {
-        self.collapseButton.frame = NSMakeRect(4, (height - 26) / 2, 18, 26);
-    } else {
-        self.collapseButton.frame = NSZeroRect;
-    }
-    CGFloat checkX = 10 + indent + disclosureWidth;
+    CGFloat checkX = 10 + indent;
     self.check.frame = NSMakeRect(checkX, (height - 20) / 2, 20, 20);
     CGFloat x = checkX + 28;
     CGFloat idWidth = 40;
-    CGFloat rightInset = 8;
+    CGFloat rightInset = 6;
+    CGFloat disclosureWidth = self.collapseButton.hidden ? 0 : 30;
     CGFloat addWidth = self.addButton.hidden ? 0 : 28;
     CGFloat priorityWidth = 28;
     CGFloat rightX = NSWidth(self.bounds) - rightInset;
+    if (!self.collapseButton.hidden) {
+        self.collapseButton.frame = NSMakeRect(rightX - disclosureWidth, (height - 32) / 2, disclosureWidth, 32);
+        rightX -= disclosureWidth + 2;
+    } else {
+        self.collapseButton.frame = NSZeroRect;
+    }
     if (!self.addButton.hidden) {
         self.addButton.frame = NSMakeRect(rightX - addWidth, (height - 28) / 2, addWidth, 28);
         rightX -= addWidth + 2;
@@ -504,7 +509,7 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
     BOOL hasCollapsibleChildren = !self.childRow && [summary[@"hasCollapsibleChildren"] boolValue];
     BOOL childrenCollapsed = [summary[@"childrenCollapsed"] boolValue];
     self.collapseButton.hidden = !hasCollapsibleChildren;
-    self.collapseButton.title = childrenCollapsed ? @"▸" : @"▾";
+    self.collapseButton.title = childrenCollapsed ? @"▶" : @"▼";
     self.collapseButton.handler = collapseHandler;
     self.collapseButton.toolTip = childrenCollapsed
         ? (english ? @"Expand child tasks" : @"展开子任务")
@@ -1444,6 +1449,33 @@ toPasteboard:(NSPasteboard *)pasteboard {
         [self persistCollapsedParentIDs];
     }
 }
+- (NSInteger)rowIndexForParentID:(NSNumber *)parentID {
+    if (!parentID) return NSNotFound;
+    for (NSInteger row = 0; row < self.rows.count; row++) {
+        NSDictionary *summary = self.rows[row];
+        if ([summary[@"kind"] isEqualToString:@"parent"] && [summary[@"id"] isEqual:parentID]) return row;
+    }
+    return NSNotFound;
+}
+- (CGFloat)viewportOffsetForParentID:(NSNumber *)parentID {
+    NSInteger row = [self rowIndexForParentID:parentID];
+    if (row == NSNotFound) return NAN;
+    NSRect rowRect = [self.sidebar.tableView rectOfRow:row];
+    return NSMinY(rowRect) - NSMinY(self.sidebar.scrollView.contentView.bounds);
+}
+- (void)restoreParentID:(NSNumber *)parentID viewportOffset:(CGFloat)viewportOffset {
+    if (!parentID || isnan(viewportOffset)) return;
+    NSInteger row = [self rowIndexForParentID:parentID];
+    if (row == NSNotFound) return;
+    NSTableView *tableView = self.sidebar.tableView;
+    NSClipView *clipView = self.sidebar.scrollView.contentView;
+    [tableView layoutSubtreeIfNeeded];
+    NSRect rowRect = [tableView rectOfRow:row];
+    CGFloat maxY = MAX(0.0, NSHeight(tableView.bounds) - NSHeight(clipView.bounds));
+    CGFloat targetY = MAX(0.0, MIN(NSMinY(rowRect) - viewportOffset, maxY));
+    [clipView scrollToPoint:NSMakePoint(NSMinX(clipView.bounds), targetY)];
+    [self.sidebar.scrollView reflectScrolledClipView:clipView];
+}
 - (void)setParentID:(NSNumber *)parentID collapsed:(BOOL)collapsed {
     if (!parentID || ![self saveIfNeeded]) return;
     NSDictionary *parent = [self parentSummaryForTaskID:parentID];
@@ -1452,6 +1484,7 @@ toPasteboard:(NSPasteboard *)pasteboard {
 
     BOOL currentlyCollapsed = [self.collapsedParentIDs containsObject:parentID];
     if (currentlyCollapsed == collapsed) return;
+    CGFloat viewportOffset = [self viewportOffsetForParentID:parentID];
     if (collapsed) [self.collapsedParentIDs addObject:parentID];
     else [self.collapsedParentIDs removeObject:parentID];
     [self persistCollapsedParentIDs];
@@ -1459,6 +1492,7 @@ toPasteboard:(NSPasteboard *)pasteboard {
     BOOL hideSelectedChild = collapsed && self.selectedIsSubtask && [self.selectedParentID isEqual:parentID];
     if (hideSelectedChild) [self selectID:parentID];
     [self applyFilter];
+    [self restoreParentID:parentID viewportOffset:viewportOffset];
 }
 - (void)reloadSummaries {
     NSError *error = nil; id value = BridgeCall(@{@"command":@"list"}, &error); if (!value) { [self showError:error]; return; }
@@ -2566,6 +2600,8 @@ toPasteboard:(NSPasteboard *)pasteboard {
     NSString *benchmarkDragToRow = environment[@"TODO_BENCHMARK_DRAG_TO_ROW"];
     NSString *benchmarkCollapseParentID = environment[@"TODO_BENCHMARK_COLLAPSE_PARENT_ID"];
     NSString *benchmarkExpandParentID = environment[@"TODO_BENCHMARK_EXPAND_PARENT_ID"];
+    NSString *benchmarkScrollParentID = environment[@"TODO_BENCHMARK_SCROLL_PARENT_ID"];
+    NSString *benchmarkScrollParentOffset = environment[@"TODO_BENCHMARK_SCROLL_PARENT_OFFSET"];
     BOOL benchmarkDeleteCurrent = [environment[@"TODO_BENCHMARK_DELETE_CURRENT"] boolValue];
     if ([benchmarkStatusFilter isEqualToString:@"active"]) {
         self.filterIndex = 1;
@@ -2625,6 +2661,10 @@ toPasteboard:(NSPasteboard *)pasteboard {
         NSDictionary *secondRow = self.rows[1];
         NSNumber *selectionID = [secondRow[@"selectionId"] isKindOfClass:NSNumber.class] ? secondRow[@"selectionId"] : secondRow[@"id"];
         [self selectID:selectionID];
+    }
+    if (benchmarkScrollParentID.longLongValue > 0) {
+        CGFloat offset = benchmarkScrollParentOffset.length ? benchmarkScrollParentOffset.doubleValue : 140.0;
+        [self restoreParentID:@(benchmarkScrollParentID.longLongValue) viewportOffset:offset];
     }
     if (benchmarkCollapseParentID.longLongValue > 0) {
         [self setParentID:@(benchmarkCollapseParentID.longLongValue) collapsed:YES];
@@ -2731,6 +2771,8 @@ toPasteboard:(NSPasteboard *)pasteboard {
             NSNumber *firstSelectionID = [firstRow[@"selectionId"] isKindOfClass:NSNumber.class] ? firstRow[@"selectionId"] : firstRowID;
             BOOL firstCollapsed = [firstRow[@"collapsedSingleChild"] boolValue];
             BOOL firstChildrenCollapsed = [firstRow[@"childrenCollapsed"] boolValue];
+            NSNumber *benchmarkAnchorID = benchmarkScrollParentID.longLongValue > 0 ? @(benchmarkScrollParentID.longLongValue) : nil;
+            CGFloat benchmarkAnchorOffset = benchmarkAnchorID ? [self viewportOffsetForParentID:benchmarkAnchorID] : NAN;
             NSMenu *filterMenu = [self buildFilterMenu];
             NSUInteger checkedFilterItems = 0;
             NSUInteger filterMenuHeadings = 0;
@@ -2739,7 +2781,7 @@ toPasteboard:(NSPasteboard *)pasteboard {
                 if (!item.enabled && !item.isSeparatorItem) filterMenuHeadings++;
             }
             fprintf(stderr,
-                    "mode=%s viewMode=%s sortMode=%s filterStatus=%ld dateFilter=%ld archiveView=%d selectedKind=%s selectedID=%s selectedParentID=%s titleOnly=%d completionState=%s completeButton=%s parentCount=%lu filteredParents=%lu rowCount=%lu collapsedParentCount=%lu firstRowID=%s firstSelectionID=%s firstCollapsed=%d firstChildrenCollapsed=%d firstRowKind=%s firstCellID=%s firstRowAddHidden=%d firstCollapseHidden=%d firstCollapseTitle=%s firstTitle=%s firstTitleX=%.0f firstTitleWidth=%.0f secondRowID=%s secondCellID=%s thirdRowID=%s thirdCellID=%s filterMenuItems=%lu filterMenuChecked=%lu filterMenuHeadings=%lu filterButtonTitle=%s tableY=%.0f tableHeight=%.0f modeHidden=%d priorityHidden=%d selectedPriority=%s priorityControl=%ld resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s managementTitle=%s window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
+                    "mode=%s viewMode=%s sortMode=%s filterStatus=%ld dateFilter=%ld archiveView=%d selectedKind=%s selectedID=%s selectedParentID=%s titleOnly=%d completionState=%s completeButton=%s parentCount=%lu filteredParents=%lu rowCount=%lu collapsedParentCount=%lu firstRowID=%s firstSelectionID=%s firstCollapsed=%d firstChildrenCollapsed=%d firstRowKind=%s firstCellID=%s firstRowAddHidden=%d firstCollapseHidden=%d firstCollapseTitle=%s firstCollapseX=%.0f firstCollapseWidth=%.0f firstTitle=%s firstTitleX=%.0f firstTitleWidth=%.0f anchorViewportOffset=%.1f secondRowID=%s secondCellID=%s thirdRowID=%s thirdCellID=%s filterMenuItems=%lu filterMenuChecked=%lu filterMenuHeadings=%lu filterButtonTitle=%s tableY=%.0f tableHeight=%.0f modeHidden=%d priorityHidden=%d selectedPriority=%s priorityControl=%ld resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s managementTitle=%s window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
                     mode.UTF8String,
                     self.viewMode == TodoViewModeEdit ? "edit" : (self.viewMode == TodoViewModeSplit ? "split" : "preview"),
                     self.sortMode == TodoSortModeNewestFirst ? "newest" : (self.sortMode == TodoSortModePriorityFirst ? "priority" : "original"),
@@ -2765,9 +2807,12 @@ toPasteboard:(NSPasteboard *)pasteboard {
                     firstCell.addButton.hidden,
                     firstCell.collapseButton.hidden,
                     firstCell.collapseButton.title.UTF8String ?: "none",
+                    NSMinX(firstCell.collapseButton.frame),
+                    NSWidth(firstCell.collapseButton.frame),
                     firstCell.titleLabel.stringValue.UTF8String ?: "none",
                     NSMinX(firstCell.titleLabel.frame),
                     NSWidth(firstCell.titleLabel.frame),
+                    benchmarkAnchorOffset,
                     secondRowID.stringValue.UTF8String ?: "none",
                     secondCell.idLabel.stringValue.UTF8String ?: "none",
                     thirdRowID.stringValue.UTF8String ?: "none",
