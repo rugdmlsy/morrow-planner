@@ -377,10 +377,12 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
 @property NSTextField *subtitleLabel;
 @property NSTextField *priorityLabel;
 @property LiteButton *addButton;
+@property LiteButton *collapseButton;
 @property(nonatomic) BOOL childRow;
 - (void)configure:(NSDictionary *)summary
           handler:(void (^)(BOOL completed))handler
        addHandler:(nullable void (^)(void))addHandler
+  collapseHandler:(nullable void (^)(void))collapseHandler
           english:(BOOL)english;
 @end
 @implementation TaskCellView
@@ -401,12 +403,14 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
         _priorityLabel.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold];
         _priorityLabel.alignment = NSTextAlignmentCenter;
         _addButton = [[LiteButton alloc] initWithTitle:@"+" style:LiteButtonStylePlain];
+        _collapseButton = [[LiteButton alloc] initWithTitle:@"▾" style:LiteButtonStylePlain];
         [self addSubview:_check];
         [self addSubview:_idLabel];
         [self addSubview:_titleLabel];
         [self addSubview:_subtitleLabel];
         [self addSubview:_priorityLabel];
         [self addSubview:_addButton];
+        [self addSubview:_collapseButton];
     }
     return self;
 }
@@ -414,8 +418,15 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
     [super layout];
     CGFloat height = NSHeight(self.bounds);
     CGFloat indent = self.childRow ? 18.0 : 0.0;
-    self.check.frame = NSMakeRect(10 + indent, (height - 20) / 2, 20, 20);
-    CGFloat x = 38 + indent;
+    CGFloat disclosureWidth = self.collapseButton.hidden ? 0.0 : 12.0;
+    if (!self.collapseButton.hidden) {
+        self.collapseButton.frame = NSMakeRect(4, (height - 26) / 2, 18, 26);
+    } else {
+        self.collapseButton.frame = NSZeroRect;
+    }
+    CGFloat checkX = 10 + indent + disclosureWidth;
+    self.check.frame = NSMakeRect(checkX, (height - 20) / 2, 20, 20);
+    CGFloat x = checkX + 28;
     CGFloat idWidth = 40;
     CGFloat rightInset = 8;
     CGFloat addWidth = self.addButton.hidden ? 0 : 28;
@@ -436,6 +447,7 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
 - (void)configure:(NSDictionary *)summary
           handler:(void (^)(BOOL completed))handler
        addHandler:(void (^)(void))addHandler
+  collapseHandler:(void (^)(void))collapseHandler
           english:(BOOL)english {
     NSString *kind = [summary[@"kind"] isKindOfClass:NSString.class] ? summary[@"kind"] : @"parent";
     self.childRow = [kind isEqualToString:@"subtask"];
@@ -489,6 +501,16 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
         ? (english ? @"Complete child task" : @"完成子任务")
         : (english ? @"Complete project" : @"完成事项");
 
+    BOOL hasCollapsibleChildren = !self.childRow && [summary[@"hasCollapsibleChildren"] boolValue];
+    BOOL childrenCollapsed = [summary[@"childrenCollapsed"] boolValue];
+    self.collapseButton.hidden = !hasCollapsibleChildren;
+    self.collapseButton.title = childrenCollapsed ? @"▸" : @"▾";
+    self.collapseButton.handler = collapseHandler;
+    self.collapseButton.toolTip = childrenCollapsed
+        ? (english ? @"Expand child tasks" : @"展开子任务")
+        : (english ? @"Collapse child tasks" : @"折叠子任务");
+    self.collapseButton.accessibilityLabel = self.collapseButton.toolTip;
+
     self.addButton.hidden = self.childRow;
     self.addButton.handler = addHandler;
     self.addButton.toolTip = english ? @"Add child task" : @"添加子任务";
@@ -537,6 +559,7 @@ static NSString *const TodoLanguageDefaultsKey = @"TodoLanguage";
 static NSString *const TodoViewModeDefaultsKey = @"TodoWorkspaceModeV2";
 static NSString *const TodoCompletionResultRatioDefaultsKey = @"TodoCompletionResultRatio";
 static NSString *const TodoSortModeDefaultsKey = @"TodoSortMode";
+static NSString *const TodoCollapsedParentIDsDefaultsKey = @"TodoCollapsedParentIDs";
 static NSNotificationName const TodoLanguageDidChangeNotification = @"TodoLanguageDidChangeNotification";
 
 static NSString *TodoLocalized(TodoLanguage language, NSString *chinese, NSString *english) {
@@ -968,6 +991,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @property NSString *editorSnapshot;
 @property NSString *completionResultSnapshot;
 @property NSMutableDictionary<NSNumber *, NSNumber *> *resultExpansionOverrides;
+@property NSMutableSet<NSNumber *> *collapsedParentIDs;
 @property BOOL dirty;
 @property BOOL suppressTextChanges;
 @property(nullable) NSTimer *saveTimer;
@@ -978,12 +1002,20 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 - (NSMenu *)buildFilterMenu;
 - (void)updateFilterMenuPresentation;
 - (void)addSubtaskToParentID:(NSNumber *)parentID;
+- (void)setParentID:(NSNumber *)parentID collapsed:(BOOL)collapsed;
 @end
 
 @implementation TodoController
 - (void)loadView {
     self.summaries = @[]; self.filtered = @[]; self.rows = @[]; self.editorSnapshot = @""; self.completionResultSnapshot = @"";
     self.resultExpansionOverrides = [NSMutableDictionary dictionary];
+    self.collapsedParentIDs = [NSMutableSet set];
+    NSArray *savedCollapsedParentIDs = [NSUserDefaults.standardUserDefaults arrayForKey:TodoCollapsedParentIDsDefaultsKey];
+    for (id value in savedCollapsedParentIDs) {
+        if ([value isKindOfClass:NSNumber.class] && [value unsignedLongLongValue] > 0) {
+            [self.collapsedParentIDs addObject:value];
+        }
+    }
     NSString *savedLanguage = [NSUserDefaults.standardUserDefaults stringForKey:TodoLanguageDefaultsKey];
     NSString *benchmarkLanguage = NSProcessInfo.processInfo.environment[@"TODO_BENCHMARK_LANGUAGE"];
     NSString *initialLanguage = benchmarkLanguage.length ? benchmarkLanguage : savedLanguage;
@@ -1360,9 +1392,11 @@ toPasteboard:(NSPasteboard *)pasteboard {
     BOOL collapsedSingleChild = [summary[@"collapsedSingleChild"] boolValue];
     NSNumber *toggleID = collapsedSingleChild ? selectionID : rowID;
     __weak typeof(self) weakSelf = self;
+    BOOL childrenCollapsed = [summary[@"childrenCollapsed"] boolValue];
     [cell configure:summary
             handler:^(BOOL completed) { [weakSelf toggleID:toggleID completed:completed]; }
          addHandler:(child ? nil : ^{ [weakSelf addSubtaskToParentID:rowID]; })
+    collapseHandler:(child ? nil : ^{ [weakSelf setParentID:rowID collapsed:!childrenCollapsed]; })
             english:(self.language == TodoLanguageEnglish)];
     if (child && parentID && childIndex) {
         cell.accessibilityHelp = [NSString stringWithFormat:
@@ -1391,9 +1425,45 @@ toPasteboard:(NSPasteboard *)pasteboard {
     }
     [self selectID:taskID];
 }
+- (void)persistCollapsedParentIDs {
+    if ([NSProcessInfo.processInfo.environment[@"TODO_BENCHMARK_HEADLESS"] boolValue]) return;
+    NSArray<NSNumber *> *ordered = [[self.collapsedParentIDs allObjects] sortedArrayUsingSelector:@selector(compare:)];
+    [NSUserDefaults.standardUserDefaults setObject:ordered forKey:TodoCollapsedParentIDsDefaultsKey];
+}
+- (void)pruneCollapsedParentIDs {
+    NSMutableSet<NSNumber *> *valid = [NSMutableSet set];
+    for (NSDictionary *parent in self.summaries) {
+        NSNumber *parentID = [parent[@"id"] isKindOfClass:NSNumber.class] ? parent[@"id"] : nil;
+        NSInteger childCount = [parent[@"subtaskCount"] integerValue];
+        if (parentID && childCount > 1) [valid addObject:parentID];
+    }
+    NSMutableSet<NSNumber *> *pruned = [self.collapsedParentIDs mutableCopy];
+    [pruned intersectSet:valid];
+    if (![pruned isEqualToSet:self.collapsedParentIDs]) {
+        self.collapsedParentIDs = pruned;
+        [self persistCollapsedParentIDs];
+    }
+}
+- (void)setParentID:(NSNumber *)parentID collapsed:(BOOL)collapsed {
+    if (!parentID || ![self saveIfNeeded]) return;
+    NSDictionary *parent = [self parentSummaryForTaskID:parentID];
+    NSArray *children = [parent[@"subtasks"] isKindOfClass:NSArray.class] ? parent[@"subtasks"] : @[];
+    if (!parent || children.count <= 1) return;
+
+    BOOL currentlyCollapsed = [self.collapsedParentIDs containsObject:parentID];
+    if (currentlyCollapsed == collapsed) return;
+    if (collapsed) [self.collapsedParentIDs addObject:parentID];
+    else [self.collapsedParentIDs removeObject:parentID];
+    [self persistCollapsedParentIDs];
+
+    BOOL hideSelectedChild = collapsed && self.selectedIsSubtask && [self.selectedParentID isEqual:parentID];
+    if (hideSelectedChild) [self selectID:parentID];
+    [self applyFilter];
+}
 - (void)reloadSummaries {
     NSError *error = nil; id value = BridgeCall(@{@"command":@"list"}, &error); if (!value) { [self showError:error]; return; }
     self.summaries = value; if (self.selectedID && ![self summaryForID:self.selectedID]) { self.selectedID = nil; [self clearCurrent]; }
+    [self pruneCollapsedParentIDs];
     [self applyFilter];
 }
 - (void)refreshFromDisk:(id)sender {
@@ -1811,9 +1881,16 @@ toPasteboard:(NSPasteboard *)pasteboard {
     NSMutableArray<NSDictionary *> *rows = [NSMutableArray array];
     for (NSDictionary *group in groups) {
         NSDictionary *parent = group[@"parent"];
+        NSArray *allChildren = [parent[@"subtasks"] isKindOfClass:NSArray.class] ? parent[@"subtasks"] : @[];
+        BOOL hasCollapsibleChildren = allChildren.count > 1;
+        NSNumber *parentID = [parent[@"id"] isKindOfClass:NSNumber.class] ? parent[@"id"] : nil;
+        BOOL childrenCollapsed = hasCollapsibleChildren && parentID && [self.collapsedParentIDs containsObject:parentID];
+        NSMutableDictionary *displayParent = [parent mutableCopy];
+        displayParent[@"hasCollapsibleChildren"] = @(hasCollapsibleChildren);
+        displayParent[@"childrenCollapsed"] = @(childrenCollapsed);
         [filteredParents addObject:parent];
-        [rows addObject:parent];
-        [rows addObjectsFromArray:group[@"children"]];
+        [rows addObject:displayParent];
+        if (!childrenCollapsed) [rows addObjectsFromArray:group[@"children"]];
     }
     self.filtered = filteredParents;
     self.rows = rows;
@@ -2190,6 +2267,10 @@ toPasteboard:(NSPasteboard *)pasteboard {
         [self showError:error];
         return;
     }
+    if ([self.collapsedParentIDs containsObject:parentID]) {
+        [self.collapsedParentIDs removeObject:parentID];
+        [self persistCollapsedParentIDs];
+    }
     [self reloadSummaries];
     [self selectID:task[@"id"]];
     if (self.viewMode != TodoViewModePreview) {
@@ -2483,6 +2564,8 @@ toPasteboard:(NSPasteboard *)pasteboard {
     NSString *benchmarkAddChildParentID = environment[@"TODO_BENCHMARK_ADD_CHILD_TO_PARENT_ID"];
     NSString *benchmarkDragFromRow = environment[@"TODO_BENCHMARK_DRAG_FROM_ROW"];
     NSString *benchmarkDragToRow = environment[@"TODO_BENCHMARK_DRAG_TO_ROW"];
+    NSString *benchmarkCollapseParentID = environment[@"TODO_BENCHMARK_COLLAPSE_PARENT_ID"];
+    NSString *benchmarkExpandParentID = environment[@"TODO_BENCHMARK_EXPAND_PARENT_ID"];
     BOOL benchmarkDeleteCurrent = [environment[@"TODO_BENCHMARK_DELETE_CURRENT"] boolValue];
     if ([benchmarkStatusFilter isEqualToString:@"active"]) {
         self.filterIndex = 1;
@@ -2542,6 +2625,12 @@ toPasteboard:(NSPasteboard *)pasteboard {
         NSDictionary *secondRow = self.rows[1];
         NSNumber *selectionID = [secondRow[@"selectionId"] isKindOfClass:NSNumber.class] ? secondRow[@"selectionId"] : secondRow[@"id"];
         [self selectID:selectionID];
+    }
+    if (benchmarkCollapseParentID.longLongValue > 0) {
+        [self setParentID:@(benchmarkCollapseParentID.longLongValue) collapsed:YES];
+    }
+    if (benchmarkExpandParentID.longLongValue > 0) {
+        [self setParentID:@(benchmarkExpandParentID.longLongValue) collapsed:NO];
     }
     if (benchmarkAddChildParentID.longLongValue > 0) {
         [self addSubtaskToParentID:@(benchmarkAddChildParentID.longLongValue)];
@@ -2641,6 +2730,7 @@ toPasteboard:(NSPasteboard *)pasteboard {
                 : nil;
             NSNumber *firstSelectionID = [firstRow[@"selectionId"] isKindOfClass:NSNumber.class] ? firstRow[@"selectionId"] : firstRowID;
             BOOL firstCollapsed = [firstRow[@"collapsedSingleChild"] boolValue];
+            BOOL firstChildrenCollapsed = [firstRow[@"childrenCollapsed"] boolValue];
             NSMenu *filterMenu = [self buildFilterMenu];
             NSUInteger checkedFilterItems = 0;
             NSUInteger filterMenuHeadings = 0;
@@ -2649,7 +2739,7 @@ toPasteboard:(NSPasteboard *)pasteboard {
                 if (!item.enabled && !item.isSeparatorItem) filterMenuHeadings++;
             }
             fprintf(stderr,
-                    "mode=%s viewMode=%s sortMode=%s filterStatus=%ld dateFilter=%ld archiveView=%d selectedKind=%s selectedID=%s selectedParentID=%s titleOnly=%d completionState=%s completeButton=%s parentCount=%lu filteredParents=%lu rowCount=%lu firstRowID=%s firstSelectionID=%s firstCollapsed=%d firstRowKind=%s firstCellID=%s firstRowAddHidden=%d firstTitle=%s firstTitleX=%.0f firstTitleWidth=%.0f secondRowID=%s secondCellID=%s thirdRowID=%s thirdCellID=%s filterMenuItems=%lu filterMenuChecked=%lu filterMenuHeadings=%lu filterButtonTitle=%s tableY=%.0f tableHeight=%.0f modeHidden=%d priorityHidden=%d selectedPriority=%s priorityControl=%ld resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s managementTitle=%s window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
+                    "mode=%s viewMode=%s sortMode=%s filterStatus=%ld dateFilter=%ld archiveView=%d selectedKind=%s selectedID=%s selectedParentID=%s titleOnly=%d completionState=%s completeButton=%s parentCount=%lu filteredParents=%lu rowCount=%lu collapsedParentCount=%lu firstRowID=%s firstSelectionID=%s firstCollapsed=%d firstChildrenCollapsed=%d firstRowKind=%s firstCellID=%s firstRowAddHidden=%d firstCollapseHidden=%d firstCollapseTitle=%s firstTitle=%s firstTitleX=%.0f firstTitleWidth=%.0f secondRowID=%s secondCellID=%s thirdRowID=%s thirdCellID=%s filterMenuItems=%lu filterMenuChecked=%lu filterMenuHeadings=%lu filterButtonTitle=%s tableY=%.0f tableHeight=%.0f modeHidden=%d priorityHidden=%d selectedPriority=%s priorityControl=%ld resultExpanded=%d resultDisclosureHidden=%d resultDisclosure=%.0fx%.0f language=%s heading=%s createTask=%s managementTitle=%s window=%.0fx%.0f split=%.0fx%.0f sidebarFrame=%.0f,%.0f,%.0f,%.0f detailFrame=%.0f,%.0f,%.0f,%.0f viewport=%.0fx%.0f editor=%.0fx%.0f editorContainer=%.0f editorUsed=%.0f editorChars=%lu result=%.0fx%.0f resultUsed=%.0fx%.0f resultChars=%lu preview=%.0fx%.0f previewContainer=%.0f previewUsed=%.0f previewChars=%lu resultPreviewExists=%d resultPreview=%.0fx%.0f resultPreviewContainer=%.0f resultPreviewUsed=%.0fx%.0f resultPreviewChars=%lu resultPreviewLinks=%lu resultEditorHidden=%d resultPreviewHidden=%d editorHidden=%d previewHidden=%d dividerHitHeight=%.0f dividerOwnsLeft=%d dividerOwnsCenter=%d dividerOwnsRight=%d\n",
                     mode.UTF8String,
                     self.viewMode == TodoViewModeEdit ? "edit" : (self.viewMode == TodoViewModeSplit ? "split" : "preview"),
                     self.sortMode == TodoSortModeNewestFirst ? "newest" : (self.sortMode == TodoSortModePriorityFirst ? "priority" : "original"),
@@ -2665,12 +2755,16 @@ toPasteboard:(NSPasteboard *)pasteboard {
                     (unsigned long)self.summaries.count,
                     (unsigned long)self.filtered.count,
                     (unsigned long)self.rows.count,
+                    (unsigned long)self.collapsedParentIDs.count,
                     firstRowID.stringValue.UTF8String ?: "none",
                     firstSelectionID.stringValue.UTF8String ?: "none",
                     firstCollapsed,
+                    firstChildrenCollapsed,
                     [firstRow[@"kind"] isKindOfClass:NSString.class] ? [firstRow[@"kind"] UTF8String] : "none",
                     firstCell.idLabel.stringValue.UTF8String ?: "none",
                     firstCell.addButton.hidden,
+                    firstCell.collapseButton.hidden,
+                    firstCell.collapseButton.title.UTF8String ?: "none",
                     firstCell.titleLabel.stringValue.UTF8String ?: "none",
                     NSMinX(firstCell.titleLabel.frame),
                     NSWidth(firstCell.titleLabel.frame),
