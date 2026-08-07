@@ -45,7 +45,7 @@ Each child supports:
 
 The completion-result section is collapsible. Empty results start collapsed, non-empty results start expanded, and the document/result ratio can be changed by dragging the divider. Markdown is parsed by `pulldown-cmark`; Rust returns structured style runs and AppKit renders them without an HTML or JavaScript runtime.
 
-The sidebar combines status filtering, creation-time filtering, and sorting in one Filter / Sort menu. Parent context is retained when a matching child is shown. Filtering or switching to a derived sort does not itself change stored order or local `##N` indexes; only an explicit manual reorder changes those indexes.
+The sidebar combines status filtering, creation-time filtering, and sorting in one Filter / Sort menu. The Active filter is parent-scoped: if a parent still has any unfinished child, the parent remains visible together with both its unfinished and completed children. Explicit parent collapse still hides those child rows. The Completed filter keeps its existing child-level behavior. Filtering or switching to a derived sort does not itself change stored order or local `##N` indexes; only an explicit manual reorder changes those indexes.
 
 Archive operations remain project-scoped. Archiving a parent hides all of its children. Deleting a compact one-child row from the native app removes the whole project rather than attempting to delete its required final child. Tasks changed by another process can be loaded with the refresh button or Command-R without restarting the app.
 

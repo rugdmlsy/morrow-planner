@@ -1852,11 +1852,8 @@ toPasteboard:(NSPasteboard *)pasteboard {
     double toMs = hasTo ? effectiveTo.timeIntervalSince1970 * 1000.0 : 0;
     BOOL archiveView = self.archiveView;
 
-    BOOL (^matches)(NSDictionary *) = ^BOOL(NSDictionary *summary) {
+    BOOL (^matchesScope)(NSDictionary *) = ^BOOL(NSDictionary *summary) {
         if ([summary[@"archived"] boolValue] != archiveView) return NO;
-        BOOL completed = [summary[@"completed"] boolValue];
-        if (statusFilter == 1 && completed) return NO;
-        if (statusFilter == 2 && !completed) return NO;
         if (hasFrom || hasTo) {
             id timestampValue = summary[@"createdAtMs"];
             if (![timestampValue isKindOfClass:NSNumber.class]) return NO;
@@ -1865,6 +1862,9 @@ toPasteboard:(NSPasteboard *)pasteboard {
             if (hasTo && (toIsExclusive ? createdAtMs >= toMs : createdAtMs > toMs)) return NO;
         }
         return YES;
+    };
+    BOOL (^matchesCompletedStatus)(NSDictionary *) = ^BOOL(NSDictionary *summary) {
+        return matchesScope(summary) && [summary[@"completed"] boolValue];
     };
 
     TodoSortMode sortMode = self.sortMode;
@@ -1889,16 +1889,40 @@ toPasteboard:(NSPasteboard *)pasteboard {
     for (NSDictionary *parent in self.summaries) {
         NSArray<NSDictionary *> *allChildren = [parent[@"subtasks"] isKindOfClass:NSArray.class] ? parent[@"subtasks"] : @[];
         BOOL collapsedSingleChild = [parent[@"collapsedSingleChild"] boolValue] && allChildren.count == 1;
+
+        if (statusFilter == 1) {
+            // “Active” is parent-scoped: if any child is unfinished, keep the whole project together.
+            if ([parent[@"completed"] boolValue]) continue;
+            NSMutableArray<NSDictionary *> *scopeChildren = [NSMutableArray array];
+            for (NSDictionary *child in allChildren) {
+                if (matchesScope(child)) [scopeChildren addObject:child];
+            }
+            if (!matchesScope(parent) && scopeChildren.count == 0) continue;
+            if (collapsedSingleChild) {
+                [groups addObject:@{@"parent": parent, @"children": @[]}];
+                continue;
+            }
+            NSArray<NSDictionary *> *orderedChildren = scopeChildren;
+            if (sortMode != TodoSortModeOriginal) {
+                orderedChildren = [scopeChildren sortedArrayUsingComparator:comparator];
+            }
+            [groups addObject:@{@"parent": parent, @"children": orderedChildren}];
+            continue;
+        }
+
         if (collapsedSingleChild) {
-            if (matches(parent)) [groups addObject:@{@"parent": parent, @"children": @[]}];
+            BOOL parentMatches = statusFilter == 2 ? matchesCompletedStatus(parent) : matchesScope(parent);
+            if (parentMatches) [groups addObject:@{@"parent": parent, @"children": @[]}];
             continue;
         }
 
         NSMutableArray<NSDictionary *> *visibleChildren = [NSMutableArray array];
         for (NSDictionary *child in allChildren) {
-            if (matches(child)) [visibleChildren addObject:child];
+            BOOL childMatches = statusFilter == 2 ? matchesCompletedStatus(child) : matchesScope(child);
+            if (childMatches) [visibleChildren addObject:child];
         }
-        if (!matches(parent) && visibleChildren.count == 0) continue;
+        BOOL parentMatches = statusFilter == 2 ? matchesCompletedStatus(parent) : matchesScope(parent);
+        if (!parentMatches && visibleChildren.count == 0) continue;
         NSArray<NSDictionary *> *orderedChildren = visibleChildren;
         if (sortMode != TodoSortModeOriginal) {
             orderedChildren = [visibleChildren sortedArrayUsingComparator:comparator];
