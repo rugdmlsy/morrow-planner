@@ -1,21 +1,21 @@
 # Todo
 
-A local-first macOS Todo application with a native desktop interface and a native command-line interface.
+Todo is a local macOS task app with a native desktop UI and a Rust command-line interface.
 
-- `Todo`: Objective-C AppKit interface using `NSTableView` and `NSTextView`.
-- `todoctl`: non-interactive Rust CLI suitable for scripts and automation.
-- `todo-core`: shared Rust validation, locking, migration, and atomic JSON persistence.
-- `todo-macos-bridge`: small static Rust library exposed to AppKit through a C ABI.
+- `Todo` is an Objective-C AppKit app built with `NSTableView` and `NSTextView`.
+- `todoctl` is a non-interactive Rust CLI for scripts and automation.
+- `todo-core` handles validation, locking, migration, and atomic JSON persistence.
+- `todo-macos-bridge` exposes the Rust core to AppKit through a small C ABI.
 
-The desktop application contains no WebView, JavaScript runtime, HTML renderer, SwiftUI frontend, or Tauri runtime.
+The desktop app does not use WebView, JavaScript, HTML rendering, SwiftUI, or the Tauri runtime.
 
 ## Task hierarchy
 
-Every project contains at least one child task.
+Every project has at least one child task.
 
-When a project has exactly one child, the sidebar shows one compact project row instead of a redundant parent-and-child pair. The row keeps the parent ID, such as `#12`, but its title, subtitle, priority, completion state, Markdown document, and completion result come from the unique child. Selecting the row opens that child in the full editor. The row’s `+` button adds a second child and expands the project.
+A project with one child appears as a single compact row. The row keeps the parent ID, such as `#12`, while the visible title, subtitle, priority, completion state, Markdown document, and completion result come from the child. Selecting the row opens that child in the full editor. Pressing `+` adds a second child and expands the project.
 
-When a project has multiple children, the sidebar shows a parent row followed by indented child rows:
+A project with multiple children shows one parent row followed by indented child rows:
 
 ```text
 #12   Release project
@@ -24,34 +24,27 @@ When a project has multiple children, the sidebar shows a parent row followed by
   ##3 Publish artifacts
 ```
 
-Child labels are local to their parent. They are displayed as `##1`, `##2`, and `##3`, rather than exposing unrelated global child numbers. Their shell selectors are `12##1`, `12##2`, and `12##3`. Filtering and derived sorting do not renumber them, but changing the manual child order does: moving the former `##3` to the top makes it `##1`. Internal global IDs remain in the JSON data for persistence and backward compatibility.
+Child numbers are local to the parent. The UI shows `##1`, `##2`, and `##3` instead of internal global child IDs. The matching shell selectors are `12##1`, `12##2`, and `12##3`. Filters and derived sorts do not change these numbers. Manual child reordering does, so moving the old `##3` to the top makes it `##1`. Internal global IDs stay in the JSON file for persistence and backward compatibility.
 
-Multi-child parent rows have a large disclosure control on the right. Collapsing a parent hides its child rows without changing task data, completion state, local `##N` selectors, or manual order; expanding it restores the same visible hierarchy. The parent row stays at the same viewport position while collapsing or expanding instead of jumping the sidebar back to the top. Collapse choices are remembered across normal app launches. A one-child project stays in its existing compact form and does not show a redundant disclosure control. Adding a child to a collapsed parent expands it automatically and opens the new child.
+Projects with multiple children have a large disclosure button on the right. Collapsing a project hides its child rows but does not change task data, completion state, local selectors, or manual order. Expanding it restores the same hierarchy. The project row stays at the same viewport position during either action. Collapse state is saved between normal app launches. A one-child project remains compact and has no disclosure button. Adding a child to a collapsed project expands it and opens the new child.
 
-In Original Order, rows can be reordered directly by dragging. Dragging a parent row moves the whole project, including every child. Dragging a child row changes only the order inside that parent and cannot reparent the child. When a filter hides some projects or children, those hidden records keep their stored slots while the visible peers are reordered. Collapsed children are likewise left untouched by parent-level dragging. New children are appended to the bottom of their parent's manual order. Newest First and Priority First are derived views, so manual dragging is disabled while either sort is active.
+Manual drag ordering is available in Original Order. Dragging a parent moves the whole project with all of its children. Dragging a child changes its position only within that parent; children cannot be dragged into another project. If filtering hides some rows, those hidden records keep their stored positions while the visible rows are reordered. The same applies to children hidden by a collapsed parent. New children are appended to the end of the parent's manual order. Dragging is disabled in Newest First and Priority First because those views derive their order from task data.
 
-A multi-child parent is a grouping record, not another document. It has only an optional title. When the title is empty, the first child’s displayed title is used automatically. Selecting the parent opens a title-only editor; Markdown modes, completion result, and priority editing are hidden. Parent priority is derived from the highest child priority, and parent completion is derived from child completion.
+A parent with multiple children is only a grouping record. It has an optional title and no separate Markdown document, completion result, or editable priority. If the title is empty, the UI uses the first child's displayed title. Selecting the parent opens a title-only editor. Parent priority is the highest priority among its children, and parent completion is derived from child completion.
 
-A child can be completed independently. A parent is active when none of its children are complete, partially completed when only some are complete, and completed only when every child is complete. Completing or restoring a parent applies the same state to all children. At least one child is retained under every parent.
+Children can be completed independently. A parent is active when none of its children are complete, partial when some are complete, and complete only when all are complete. Completing or restoring a parent applies the same state to every child. A parent always keeps at least one child.
 
-Each child supports:
+Each child has a Markdown document, Edit, Split, and Preview modes, a multiline Markdown completion result, Low/Medium/High priority, an immutable creation time, and its own completion state.
 
-- an editable Markdown document;
-- Edit, Split, and Preview modes;
-- a multiline Markdown completion result;
-- Low, Medium, or High priority;
-- an immutable creation time;
-- independent completion and restoration.
+The completion-result area can be collapsed. Empty results start collapsed and non-empty results start expanded. Drag the divider to change the document/result ratio. Markdown parsing is handled by `pulldown-cmark`; Rust returns structured style runs and AppKit renders them directly, without HTML or JavaScript.
 
-The completion-result section is collapsible. Empty results start collapsed, non-empty results start expanded, and the document/result ratio can be changed by dragging the divider. Markdown is parsed by `pulldown-cmark`; Rust returns structured style runs and AppKit renders them without an HTML or JavaScript runtime.
+The Filter / Sort menu combines status filtering, creation-time filtering, and sorting. Active is a parent-level filter: if any child is unfinished, the parent and all of its children stay visible, including children that are already complete. An explicitly collapsed parent still hides its child rows. Completed keeps its existing child-level behavior. Filtering and derived sorting do not change stored order or local `##N` selectors. Only manual reordering changes those selectors.
 
-The sidebar combines status filtering, creation-time filtering, and sorting in one Filter / Sort menu. The Active filter is parent-scoped: if a parent still has any unfinished child, the parent remains visible together with both its unfinished and completed children. Explicit parent collapse still hides those child rows. The Completed filter keeps its existing child-level behavior. Filtering or switching to a derived sort does not itself change stored order or local `##N` indexes; only an explicit manual reorder changes those indexes.
-
-Archive operations remain project-scoped. Archiving a parent hides all of its children. Deleting a compact one-child row from the native app removes the whole project rather than attempting to delete its required final child. Tasks changed by another process can be loaded with the refresh button or Command-R without restarting the app.
+Archive operations work at the project level. Archiving a parent hides all of its children. Deleting a compact one-child row from the app removes the whole project instead of trying to delete its required last child. Changes made by another process can be loaded with the refresh button or Command-R without restarting the app.
 
 ## Data and migration
 
-Data is stored at:
+The default data file is:
 
 ```text
 ~/Library/Application Support/com.xycdev.todo/todos.json
@@ -59,14 +52,7 @@ Data is stored at:
 
 Set `TODO_DATA_FILE` to use another file.
 
-Legacy records are migrated automatically:
-
-- parent-only records receive one child containing the original document;
-- legacy parent content and completion results are moved into the first child;
-- legacy parent priority is transferred to the first child when it is higher;
-- redundant single-child parent titles and generated placeholders are cleared;
-- missing child fields receive safe defaults;
-- duplicate child IDs are reassigned so internal IDs remain globally unique.
+Legacy data is migrated on load. Parent-only records receive one child containing the original document. Existing parent content and completion results move into the first child, and a higher parent priority is transferred to that child. Redundant single-child parent titles and generated placeholders are cleared. Missing child fields receive defaults, and duplicate child IDs are reassigned so internal IDs remain globally unique.
 
 Migration uses the same exclusive file lock as normal writes.
 
@@ -88,7 +74,7 @@ Run it with:
 open native-macos/build/Todo.app
 ```
 
-The build requires the macOS command-line developer tools, Rust, `clang`, and `codesign`.
+Building requires the macOS command-line developer tools, Rust, `clang`, and `codesign`.
 
 ## Command-line usage
 
@@ -113,7 +99,7 @@ The list contains one row such as:
 #1  todo  low  task  Write the first draft
 ```
 
-While the project has one child, its visible parent ID aliases that child for document-level commands:
+While the project has one child, its parent ID aliases that child for document-level commands:
 
 ```bash
 todoctl content "$PARENT_ID" "# Write the first draft\n\nDraft the introduction."
@@ -122,7 +108,7 @@ todoctl priority "$PARENT_ID" high
 todoctl edit "$PARENT_ID" "Write the revised draft"
 ```
 
-Add another child. `subtask-add` prints a parent-local selector:
+Add another child. `subtask-add` prints a selector local to the parent:
 
 ```bash
 SECOND=$(todoctl subtask-add "$PARENT_ID" "Run the review")
@@ -133,7 +119,7 @@ todoctl content "$SECOND" "# Review\n\nCheck the final document."
 todoctl done "$SECOND"
 ```
 
-Once a project has multiple children, its parent ID addresses only the optional group title:
+Once a project has multiple children, the parent ID addresses only its optional group title:
 
 ```bash
 todoctl edit "$PARENT_ID" "Publication"
@@ -150,14 +136,14 @@ todoctl undo "$PARENT_ID##2"
 todoctl delete "$PARENT_ID##2"
 ```
 
-Manual order can also be changed from the shell. Positions are 1-based:
+Manual order can also be changed from the shell. Positions start at 1:
 
 ```bash
 todoctl move 12 1       # move parent #12 to the top
 todoctl move 12##3 1    # move the third child to the top of parent #12
 ```
 
-A child move changes its local `##N` selector. `subtask-add` always appends the new child after the existing manual child order.
+Moving a child changes its local `##N` selector. `subtask-add` always appends the new child after the existing manual child order.
 
 Other commands:
 
@@ -179,7 +165,7 @@ todoctl clear-archived
 todoctl path
 ```
 
-Numeric internal child IDs remain accepted for compatibility, but normal text output and new scripts should use `P##N` selectors.
+Numeric internal child IDs are still accepted for compatibility. Normal text output and new scripts should use `P##N` selectors.
 
 For isolated tests:
 
@@ -200,7 +186,7 @@ codesign --verify --deep --strict native-macos/build/Todo.app
 
 ## Headless UI diagnostics
 
-Set `TODO_BENCHMARK_HEADLESS=1` to keep the benchmark window transparent and non-activating. This allows layout and data-flow checks without changing the current frontmost application or keyboard focus.
+Set `TODO_BENCHMARK_HEADLESS=1` to keep the benchmark window transparent and non-activating. This lets layout and data-flow tests run without changing the frontmost application or keyboard focus.
 
 ```bash
 TODO_DATA_FILE=/tmp/todos.json \
@@ -211,4 +197,4 @@ TODO_LAYOUT_DIAGNOSTICS=1 \
 native-macos/build/Todo.app/Contents/MacOS/Todo
 ```
 
-`TODO_BENCHMARK_TASK_ID` uses the internal numeric ID because it is a development-only diagnostic interface. User-facing CLI operations should use a parent ID or `P##N` child selector.
+`TODO_BENCHMARK_TASK_ID` uses the internal numeric ID because this interface is only for development diagnostics. User-facing CLI commands should use a parent ID or a `P##N` child selector.
