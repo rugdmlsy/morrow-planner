@@ -587,6 +587,18 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
     }
 }
 
+@interface TaskTableView : NSTableView
+@property(nonatomic, copy, nullable) NSMenu *(^contextMenuProvider)(NSInteger row);
+@end
+@implementation TaskTableView
+- (NSMenu *)menuForEvent:(NSEvent *)event {
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSInteger row = [self rowAtPoint:point];
+    if (row < 0 || !self.contextMenuProvider) return nil;
+    return self.contextMenuProvider(row);
+}
+@end
+
 @interface SidebarView : NSView
 @property NSTextField *dateLabel;
 @property NSTextField *headingLabel;
@@ -596,7 +608,7 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
 @property LiteButton *toggleAllButton;
 @property LiteButton *filterMenuButton;
 @property NSScrollView *scrollView;
-@property NSTableView *tableView;
+@property TaskTableView *tableView;
 @property NSTextField *countLabel;
 @property LiteButton *managementButton;
 @end
@@ -612,7 +624,7 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
         _refreshButton.accessibilityLabel = @"刷新";
         _toggleAllButton = [[LiteButton alloc] initWithTitle:@"全部完成" style:LiteButtonStylePlain];
         _filterMenuButton = [[LiteButton alloc] initWithTitle:@"筛选/排序 ▾" style:LiteButtonStyleBordered];
-        _tableView = [[NSTableView alloc] initWithFrame:NSZeroRect]; NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"task"]; [_tableView addTableColumn:column]; _tableView.headerView = nil; _tableView.rowHeight = 62; _tableView.intercellSpacing = NSMakeSize(0, 1); _tableView.backgroundColor = NSColor.clearColor;
+        _tableView = [[TaskTableView alloc] initWithFrame:NSZeroRect]; NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"task"]; [_tableView addTableColumn:column]; _tableView.headerView = nil; _tableView.rowHeight = 62; _tableView.intercellSpacing = NSMakeSize(0, 1); _tableView.backgroundColor = NSColor.clearColor;
         _scrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect]; _scrollView.documentView = _tableView; _scrollView.hasVerticalScroller = YES; _scrollView.autohidesScrollers = YES; _scrollView.drawsBackground = NO;
         _countLabel = [NSTextField labelWithString:@""]; _countLabel.font = [NSFont systemFontOfSize:11]; _countLabel.textColor = NSColor.secondaryLabelColor;
         _managementButton = [[LiteButton alloc] initWithTitle:@"管理…" style:LiteButtonStylePlain];
@@ -1008,6 +1020,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 - (void)updateFilterMenuPresentation;
 - (void)addSubtaskToParentID:(NSNumber *)parentID;
 - (void)setParentID:(NSNumber *)parentID collapsed:(BOOL)collapsed;
+- (NSMenu *)taskContextMenuForRow:(NSInteger)row;
+- (void)deleteTaskFromContextMenu:(NSMenuItem *)sender;
 @end
 
 @implementation TodoController
@@ -1037,10 +1051,13 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.detail.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [self.split addArrangedSubview:self.sidebar]; [self.split addArrangedSubview:self.detail]; self.view = self.split;
     self.sidebar.tableView.delegate = self; self.sidebar.tableView.dataSource = self;
+    __weak typeof(self) weakSelf = self;
+    self.sidebar.tableView.contextMenuProvider = ^NSMenu *(NSInteger row) {
+        return [weakSelf taskContextMenuForRow:row];
+    };
     [self.sidebar.tableView registerForDraggedTypes:@[TodoTaskRowPasteboardType]];
     [self.sidebar.tableView setDraggingSourceOperationMask:NSDragOperationMove forLocal:YES];
     [self.sidebar.tableView setDraggingSourceOperationMask:NSDragOperationNone forLocal:NO];
-    __weak typeof(self) weakSelf = self;
     self.sidebar.createTaskButton.handler = ^{ [weakSelf addEditableTask]; };
     self.sidebar.languageControl.changeHandler = ^(NSInteger index) { [weakSelf changeLanguage:(TodoLanguage)index]; };
     self.sidebar.refreshButton.handler = ^{ [weakSelf refreshFromDisk:nil]; };
@@ -1381,6 +1398,60 @@ toPasteboard:(NSPasteboard *)pasteboard {
     self.draggedRow = nil;
     return [self applyDraggedRow:draggedRow dropRow:row];
 }
+- (NSMenu *)taskContextMenuForRow:(NSInteger)row {
+    if (row < 0 || row >= self.rows.count) return nil;
+    NSDictionary *summary = self.rows[row];
+    BOOL child = [summary[@"kind"] isEqualToString:@"subtask"];
+    NSString *title = child
+        ? TodoLocalized(self.language, @"删除子任务", @"Delete Child Task")
+        : TodoLocalized(self.language, @"删除事项", @"Delete Project");
+    NSMenu *menu = [NSMenu new];
+    NSMenuItem *item = [menu addItemWithTitle:title action:@selector(deleteTaskFromContextMenu:) keyEquivalent:@""];
+    item.target = self;
+    item.representedObject = summary;
+    return menu;
+}
+- (void)deleteTaskFromContextMenu:(NSMenuItem *)sender {
+    NSDictionary *summary = [sender.representedObject isKindOfClass:NSDictionary.class] ? sender.representedObject : nil;
+    if (!summary || ![self saveIfNeeded]) return;
+
+    NSNumber *rowID = [summary[@"id"] isKindOfClass:NSNumber.class] ? summary[@"id"] : nil;
+    if (!rowID) return;
+    BOOL child = [summary[@"kind"] isEqualToString:@"subtask"];
+    NSNumber *parentID = child && [summary[@"parentId"] isKindOfClass:NSNumber.class] ? summary[@"parentId"] : rowID;
+    NSNumber *selectionID = [summary[@"selectionId"] isKindOfClass:NSNumber.class] ? summary[@"selectionId"] : rowID;
+    NSNumber *selectedIDBefore = self.selectedID;
+    NSNumber *selectedParentBefore = [self currentParentID];
+    BOOL deletingCurrentTask = [selectionID isEqual:selectedIDBefore];
+    BOOL deletingCurrentProject = !child && [parentID isEqual:selectedParentBefore];
+    BOOL refreshSelectedParent = child && !self.selectedIsSubtask && [parentID isEqual:selectedIDBefore];
+
+    NSError *error = nil;
+    if (!BridgeCall(@{@"command": @"delete", @"id": rowID}, &error)) {
+        [self showError:error];
+        return;
+    }
+
+    [self.resultExpansionOverrides removeObjectForKey:selectionID];
+    if (!child) {
+        [self.collapsedParentIDs removeObject:parentID];
+        [self persistCollapsedParentIDs];
+    }
+    if (deletingCurrentTask || deletingCurrentProject) {
+        self.selectedID = nil;
+        [self clearCurrent];
+    }
+    [self reloadSummaries];
+
+    if (child && deletingCurrentTask && parentID) {
+        NSDictionary *parent = [self summaryForID:parentID];
+        NSNumber *nextSelection = [parent[@"selectionId"] isKindOfClass:NSNumber.class] ? parent[@"selectionId"] : parentID;
+        if (parent) [self selectID:nextSelection];
+    } else if (refreshSelectedParent && selectedIDBefore && [self summaryForID:selectedIDBefore]) {
+        [self selectID:selectedIDBefore];
+    }
+}
+
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
     if (row < 0 || row >= self.rows.count) return nil;
     NSDictionary *summary = self.rows[row];
@@ -2406,26 +2477,28 @@ toPasteboard:(NSPasteboard *)pasteboard {
 }
 - (void)deleteCurrent {
     if (!self.selectedID) return;
-    NSNumber *deletedID = self.selectedID;
-    NSNumber *parentID = self.selectedParentID;
-    BOOL deletedChild = self.selectedIsSubtask;
-    NSDictionary *parentSummary = parentID ? [self summaryForID:parentID] : nil;
-    BOOL collapsedSingleChild = deletedChild && [parentSummary[@"collapsedSingleChild"] boolValue];
-    NSNumber *deleteTarget = collapsedSingleChild ? parentID : deletedID;
-    NSError *error = nil;
-    if (!BridgeCall(@{@"command": @"delete", @"id": deleteTarget}, &error)) {
-        [self showError:error];
+    for (NSDictionary *summary in self.rows) {
+        NSNumber *rowID = [summary[@"id"] isKindOfClass:NSNumber.class] ? summary[@"id"] : nil;
+        NSNumber *selectionID = [summary[@"selectionId"] isKindOfClass:NSNumber.class] ? summary[@"selectionId"] : rowID;
+        if (![selectionID isEqual:self.selectedID]) continue;
+        NSMenuItem *item = [NSMenuItem new];
+        item.representedObject = summary;
+        [self deleteTaskFromContextMenu:item];
         return;
     }
-    [self.resultExpansionOverrides removeObjectForKey:deletedID];
-    self.selectedID = nil;
-    [self clearCurrent];
-    [self reloadSummaries];
-    if (deletedChild && !collapsedSingleChild && parentID) {
-        NSDictionary *parent = [self summaryForID:parentID];
-        NSNumber *selectionID = [parent[@"selectionId"] isKindOfClass:NSNumber.class] ? parent[@"selectionId"] : parentID;
-        if (parent) [self selectID:selectionID];
-    }
+
+    NSNumber *parentID = self.selectedParentID;
+    NSDictionary *parent = parentID ? [self parentSummaryForTaskID:parentID] : nil;
+    BOOL compactSingleChild = self.selectedIsSubtask && [parent[@"collapsedSingleChild"] boolValue];
+    NSNumber *rowID = compactSingleChild ? parentID : self.selectedID;
+    NSMutableDictionary *summary = [NSMutableDictionary dictionaryWithDictionary:self.currentTodo ?: @{}];
+    if (rowID) summary[@"id"] = rowID;
+    summary[@"selectionId"] = self.selectedID;
+    summary[@"kind"] = compactSingleChild ? @"parent" : (self.selectedIsSubtask ? @"subtask" : @"parent");
+    if (self.selectedIsSubtask && parentID) summary[@"parentId"] = parentID;
+    NSMenuItem *item = [NSMenuItem new];
+    item.representedObject = summary;
+    [self deleteTaskFromContextMenu:item];
 }
 - (void)closeCurrent {
     if (![self saveIfNeeded]) return;
@@ -2626,6 +2699,8 @@ toPasteboard:(NSPasteboard *)pasteboard {
     NSString *benchmarkExpandParentID = environment[@"TODO_BENCHMARK_EXPAND_PARENT_ID"];
     NSString *benchmarkScrollParentID = environment[@"TODO_BENCHMARK_SCROLL_PARENT_ID"];
     NSString *benchmarkScrollParentOffset = environment[@"TODO_BENCHMARK_SCROLL_PARENT_OFFSET"];
+    NSString *benchmarkContextMenuRow = environment[@"TODO_BENCHMARK_CONTEXT_MENU_ROW"];
+    BOOL benchmarkContextDelete = [environment[@"TODO_BENCHMARK_CONTEXT_DELETE"] boolValue];
     BOOL benchmarkDeleteCurrent = [environment[@"TODO_BENCHMARK_DELETE_CURRENT"] boolValue];
     if ([benchmarkStatusFilter isEqualToString:@"active"]) {
         self.filterIndex = 1;
@@ -2706,6 +2781,16 @@ toPasteboard:(NSPasteboard *)pasteboard {
             NSDictionary *draggedRow = self.rows[sourceRow];
             [self applyDraggedRow:draggedRow dropRow:destinationRow];
         }
+    }
+    if (benchmarkContextMenuRow.length) {
+        NSInteger contextRow = benchmarkContextMenuRow.integerValue;
+        NSMenu *menu = [self taskContextMenuForRow:contextRow];
+        NSMenuItem *item = menu.itemArray.firstObject;
+        fprintf(stderr, "contextMenuRow=%ld contextMenuTitle=%s contextMenuTargetID=%s\n",
+                (long)contextRow,
+                item.title.UTF8String ?: "none",
+                [item.representedObject[@"id"] stringValue].UTF8String ?: "none");
+        if (benchmarkContextDelete && item) [self deleteTaskFromContextMenu:item];
     }
     if (benchmarkDeleteCurrent) {
         [self deleteCurrent];
