@@ -274,7 +274,7 @@ fn handle_request(request: &str) -> Result<Value, String> {
         Request::Delete { id } => {
             let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
             store.delete_task(id).map_err(|error| error.to_string())?;
-            Ok(Value::Bool(true))
+            summaries(&store)
         }
         Request::AddSubtask { id, title } => {
             let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;

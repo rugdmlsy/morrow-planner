@@ -509,7 +509,7 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
     BOOL hasCollapsibleChildren = !self.childRow && [summary[@"hasCollapsibleChildren"] boolValue];
     BOOL childrenCollapsed = [summary[@"childrenCollapsed"] boolValue];
     self.collapseButton.hidden = !hasCollapsibleChildren;
-    self.collapseButton.title = childrenCollapsed ? @"▶" : @"▼";
+    self.collapseButton.title = childrenCollapsed ? @"◀" : @"▼";
     self.collapseButton.handler = collapseHandler;
     self.collapseButton.toolTip = childrenCollapsed
         ? (english ? @"Expand child tasks" : @"展开子任务")
@@ -1413,7 +1413,7 @@ toPasteboard:(NSPasteboard *)pasteboard {
 }
 - (void)deleteTaskFromContextMenu:(NSMenuItem *)sender {
     NSDictionary *summary = [sender.representedObject isKindOfClass:NSDictionary.class] ? sender.representedObject : nil;
-    if (!summary || ![self saveIfNeeded]) return;
+    if (!summary) return;
 
     NSNumber *rowID = [summary[@"id"] isKindOfClass:NSNumber.class] ? summary[@"id"] : nil;
     if (!rowID) return;
@@ -1427,7 +1427,8 @@ toPasteboard:(NSPasteboard *)pasteboard {
     BOOL refreshSelectedParent = child && !self.selectedIsSubtask && [parentID isEqual:selectedIDBefore];
 
     NSError *error = nil;
-    if (!BridgeCall(@{@"command": @"delete", @"id": rowID}, &error)) {
+    NSArray *updatedSummaries = BridgeCall(@{@"command": @"delete", @"id": rowID}, &error);
+    if (![updatedSummaries isKindOfClass:NSArray.class]) {
         [self showError:error];
         return;
     }
@@ -1441,14 +1442,19 @@ toPasteboard:(NSPasteboard *)pasteboard {
         self.selectedID = nil;
         [self clearCurrent];
     }
-    [self reloadSummaries];
+
+    self.summaries = updatedSummaries;
+    [self pruneCollapsedParentIDs];
+    [self applyFilter];
 
     if (child && deletingCurrentTask && parentID) {
         NSDictionary *parent = [self summaryForID:parentID];
         NSNumber *nextSelection = [parent[@"selectionId"] isKindOfClass:NSNumber.class] ? parent[@"selectionId"] : parentID;
         if (parent) [self selectID:nextSelection];
     } else if (refreshSelectedParent && selectedIDBefore && [self summaryForID:selectedIDBefore]) {
-        [self selectID:selectedIDBefore];
+        NSDictionary *parent = [self summaryForID:selectedIDBefore];
+        NSNumber *nextSelection = [parent[@"selectionId"] isKindOfClass:NSNumber.class] ? parent[@"selectionId"] : selectedIDBefore;
+        [self selectID:nextSelection];
     }
 }
 
