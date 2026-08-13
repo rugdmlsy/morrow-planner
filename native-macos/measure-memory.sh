@@ -2,12 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/native-macos/build/Todo.app/Contents/MacOS/Todo"
+BIN="$ROOT/native-macos/build/Morrow Planner.app/Contents/MacOS/Morrow Planner"
 DATA_FILE="${1:-}"
 WAIT_SECONDS="${TODO_MEMORY_WAIT_SECONDS:-7}"
 
 if [[ ! -x "$BIN" ]]; then
-  echo "Todo.app is not built; run ./native-macos/build.sh first." >&2
+  echo "Morrow Planner.app is not built; run ./native-macos/build.sh first." >&2
   exit 1
 fi
 

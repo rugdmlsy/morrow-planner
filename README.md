@@ -1,8 +1,8 @@
-# Todo
+# Morrow Planner
 
-Todo is a local macOS task app with a native desktop UI and a Rust command-line interface.
+Morrow Planner is a local macOS task app with a native desktop UI and a Rust command-line interface.
 
-- `Todo` is an Objective-C AppKit app built with `NSTableView` and `NSTextView`.
+- `Morrow Planner` is an Objective-C AppKit app built with `NSTableView` and `NSTextView`.
 - `todoctl` is a non-interactive Rust CLI for scripts and automation.
 - `todo-core` handles validation, locking, migration, and atomic JSON persistence.
 - `todo-macos-bridge` exposes the Rust core to AppKit through a small C ABI.
@@ -65,13 +65,13 @@ Migration uses the same exclusive file lock as normal writes.
 The signed local bundle is written to:
 
 ```text
-native-macos/build/Todo.app
+native-macos/build/Morrow Planner.app
 ```
 
 Run it with:
 
 ```bash
-open native-macos/build/Todo.app
+open "native-macos/build/Morrow Planner.app"
 ```
 
 Building requires the macOS command-line developer tools, Rust, `clang`, and `codesign`.
@@ -181,7 +181,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --workspace
 cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
 cargo build --release --manifest-path src-tauri/Cargo.toml -p todoctl
 ./native-macos/build.sh
-codesign --verify --deep --strict native-macos/build/Todo.app
+codesign --verify --deep --strict "native-macos/build/Morrow Planner.app"
 ```
 
 ## Headless UI diagnostics
@@ -194,7 +194,7 @@ TODO_BENCHMARK_HEADLESS=1 \
 TODO_BENCHMARK_MODE=edit \
 TODO_BENCHMARK_TASK_ID=42 \
 TODO_LAYOUT_DIAGNOSTICS=1 \
-native-macos/build/Todo.app/Contents/MacOS/Todo
+"native-macos/build/Morrow Planner.app/Contents/MacOS/Morrow Planner"
 ```
 
 `TODO_BENCHMARK_TASK_ID` uses the internal numeric ID because this interface is only for development diagnostics. User-facing CLI commands should use a parent ID or a `P##N` child selector.

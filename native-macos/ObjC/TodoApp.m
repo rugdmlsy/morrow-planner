@@ -3000,7 +3000,7 @@ toPasteboard:(NSPasteboard *)pasteboard {
                                              styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                                                backing:NSBackingStoreBuffered
                                                  defer:NO];
-    self.window.title = @"Todo";
+    self.window.title = @"Morrow Planner";
     self.window.titleVisibility = NSWindowTitleVisible;
     self.window.titlebarAppearsTransparent = NO;
     self.window.minSize = NSMakeSize(720, 560);
@@ -3031,7 +3031,7 @@ toPasteboard:(NSPasteboard *)pasteboard {
     NSMenuItem *appItem = [NSMenuItem new];
     [main addItem:appItem];
     NSMenu *app = [NSMenu new];
-    [app addItemWithTitle:TodoLocalized(language, @"退出 Todo", @"Quit Todo") action:@selector(terminate:) keyEquivalent:@"q"];
+    [app addItemWithTitle:TodoLocalized(language, @"退出 Morrow Planner", @"Quit Morrow Planner") action:@selector(terminate:) keyEquivalent:@"q"];
     appItem.submenu = app;
 
     NSMenuItem *fileItem = [NSMenuItem new];

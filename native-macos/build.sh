@@ -5,13 +5,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUST_MANIFEST="$ROOT/src-tauri/Cargo.toml"
 RUST_TARGET="$ROOT/src-tauri/target/release"
 BUILD_DIR="$ROOT/native-macos/build"
-APP="$BUILD_DIR/Todo.app"
+APP="$BUILD_DIR/Morrow Planner.app"
 MACOS_DIR="$APP/Contents/MacOS"
 RESOURCES_DIR="$APP/Contents/Resources"
 
 cargo build --release --manifest-path "$RUST_MANIFEST" -p todo-macos-bridge
 
-rm -rf "$APP"
+rm -rf "$BUILD_DIR/Todo.app" "$APP"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 clang \
@@ -23,9 +23,9 @@ clang \
   -Wl,-dead_strip \
   "$ROOT/native-macos/ObjC/TodoApp.m" \
   "$RUST_TARGET/libtodo_macos_bridge.a" \
-  -o "$MACOS_DIR/Todo"
+  -o "$MACOS_DIR/Morrow Planner"
 
-strip -x "$MACOS_DIR/Todo"
+strip -x "$MACOS_DIR/Morrow Planner"
 cp "$ROOT/native-macos/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/src-tauri/icons/icon.icns" "$RESOURCES_DIR/icon.icns"
 
