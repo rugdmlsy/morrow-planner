@@ -9,39 +9,6 @@ Morrow Planner is a local macOS task app with a native desktop UI and a Rust com
 
 The desktop app does not use WebView, JavaScript, HTML rendering, SwiftUI, or the Tauri runtime.
 
-## Task hierarchy
-
-Every project has at least one child task.
-
-A project with one child appears as a single compact row. The row keeps the parent ID, such as `#12`, while the visible title, subtitle, priority, completion state, Markdown document, and completion result come from the child. Selecting the row opens that child in the full editor. Pressing `+` adds a second child and expands the project.
-
-A project with multiple children shows one parent row followed by indented child rows:
-
-```text
-#12   Release project
-  ##1 Build package
-  ##2 Run tests
-  ##3 Publish artifacts
-```
-
-Child numbers are local to the parent. The UI shows `##1`, `##2`, and `##3` instead of internal global child IDs. The matching shell selectors are `12##1`, `12##2`, and `12##3`. Filters and derived sorts do not change these numbers. Manual child reordering does, so moving the old `##3` to the top makes it `##1`. Internal global IDs stay in the JSON file for persistence and backward compatibility.
-
-Projects with multiple children have a large disclosure button on the right. Collapsing a project hides its child rows but does not change task data, completion state, local selectors, or manual order. Expanding it restores the same hierarchy. The project row stays at the same viewport position during either action. Collapse state is saved between normal app launches. A one-child project remains compact and has no disclosure button. Adding a child to a collapsed project expands it and opens the new child.
-
-Manual drag ordering is available in Original Order. Dragging a parent moves the whole project with all of its children. Dragging a child changes its position only within that parent; children cannot be dragged into another project. If filtering hides some rows, those hidden records keep their stored positions while the visible rows are reordered. The same applies to children hidden by a collapsed parent. New children are appended to the end of the parent's manual order. Dragging is disabled in Newest First and Priority First because those views derive their order from task data. Right-click a project or child row to delete that item directly from the sidebar. Deleting a compact one-child project row removes the whole project.
-
-A parent with multiple children is only a grouping record. It has an optional title and no separate Markdown document, completion result, or editable priority. If the title is empty, the UI uses the first child's displayed title. Selecting the parent opens a title-only editor. Parent priority is the highest priority among its children, and parent completion is derived from child completion.
-
-Children can be completed independently. A parent is active when none of its children are complete, partial when some are complete, and complete only when all are complete. Completing or restoring a parent applies the same state to every child. A parent always keeps at least one child.
-
-Each child has a Markdown document, Edit, Split, and Preview modes, a multiline Markdown completion result, Low/Medium/High priority, an immutable creation time, and its own completion state.
-
-The completion-result area can be collapsed. Empty results start collapsed and non-empty results start expanded. Drag the divider to change the document/result ratio. Markdown parsing is handled by `pulldown-cmark`; Rust returns structured style runs and AppKit renders them directly, without HTML or JavaScript.
-
-The Filter / Sort menu combines status filtering, creation-time filtering, and sorting. Active is a parent-level filter: if any child is unfinished, the parent and all of its children stay visible, including children that are already complete. An explicitly collapsed parent still hides its child rows. Completed keeps its existing child-level behavior. Filtering and derived sorting do not change stored order or local `##N` selectors. Only manual reordering changes those selectors.
-
-Archive operations work at the project level. Archiving a parent hides all of its children. Deleting a compact one-child row from the app removes the whole project instead of trying to delete its required last child. Changes made by another process can be loaded with the refresh button or Command-R without restarting the app.
-
 ## Data and migration
 
 The default data file is:
