@@ -3,10 +3,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     ffi::{CStr, CString},
+    fs,
     os::raw::c_char,
     panic::{catch_unwind, AssertUnwindSafe},
+    path::{Path, PathBuf},
 };
-use todo_core::{Task, TaskKind, TaskRecord, Todo, TodoCompletionState, TodoPriority, TodoStore};
+use todo_core::{
+    default_data_file, Task, TaskKind, TaskRecord, Todo, TodoCompletionState, TodoPriority,
+    TodoStore,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "camelCase")]
@@ -69,6 +74,22 @@ enum Request {
     ClearArchived,
     SetAllCompleted {
         completed: bool,
+    },
+    ListWeeklyReports,
+    CreateWeeklyReport {
+        name: String,
+    },
+    RenameWeeklyReport {
+        name: String,
+        #[serde(rename = "newName")]
+        new_name: String,
+    },
+    DeleteWeeklyReport {
+        name: String,
+    },
+    WeeklyReportDataPath {
+        name: String,
+        section: String,
     },
     DataPath,
     RenderMarkdown {
@@ -231,15 +252,21 @@ fn error_envelope(error: &str) -> String {
 }
 
 fn handle_request(request: &str) -> Result<Value, String> {
-    let request: Request = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    let raw: Value = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    let data_file = raw
+        .get("dataFile")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from);
+    let request: Request = serde_json::from_value(raw).map_err(|error| error.to_string())?;
 
     match request {
         Request::List => {
-            let store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let store = load_store(data_file.as_deref())?;
             summaries(&store)
         }
         Request::Get { id } => {
-            let store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let store = load_store(data_file.as_deref())?;
             let detail =
                 task_detail(&store, id).ok_or_else(|| format!("task {id} was not found"))?;
             serde_json::to_value(detail).map_err(|error| error.to_string())
@@ -248,7 +275,7 @@ fn handle_request(request: &str) -> Result<Value, String> {
             title,
             initial_subtask_title,
         } => {
-            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let mut store = load_store(data_file.as_deref())?;
             let child_title = initial_subtask_title.unwrap_or_else(|| title.clone());
             let todo = store
                 .add_with_initial_subtask(title, child_title)
@@ -263,7 +290,7 @@ fn handle_request(request: &str) -> Result<Value, String> {
             priority,
             completed,
         } => {
-            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let mut store = load_store(data_file.as_deref())?;
             store
                 .update(id, title, content, completion_result, priority, completed)
                 .map_err(|error| error.to_string())?;
@@ -272,12 +299,12 @@ fn handle_request(request: &str) -> Result<Value, String> {
             serde_json::to_value(detail).map_err(|error| error.to_string())
         }
         Request::Delete { id } => {
-            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let mut store = load_store(data_file.as_deref())?;
             store.delete_task(id).map_err(|error| error.to_string())?;
             summaries(&store)
         }
         Request::AddSubtask { id, title } => {
-            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let mut store = load_store(data_file.as_deref())?;
             let record = store
                 .add_subtask(id, title)
                 .map_err(|error| error.to_string())?;
@@ -294,7 +321,7 @@ fn handle_request(request: &str) -> Result<Value, String> {
             priority,
             completed,
         } => {
-            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let mut store = load_store(data_file.as_deref())?;
             let existing = store
                 .task(subtask_id)
                 .ok_or_else(|| format!("task {subtask_id} was not found"))?;
@@ -316,7 +343,7 @@ fn handle_request(request: &str) -> Result<Value, String> {
                 .map_err(|error| error.to_string())
         }
         Request::DeleteSubtask { id, subtask_id } => {
-            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let mut store = load_store(data_file.as_deref())?;
             let record = store
                 .task(subtask_id)
                 .ok_or_else(|| format!("task {subtask_id} was not found"))?;
@@ -329,65 +356,160 @@ fn handle_request(request: &str) -> Result<Value, String> {
             Ok(Value::Bool(true))
         }
         Request::ReorderParents { ids } => {
-            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let mut store = load_store(data_file.as_deref())?;
             store
                 .reorder_parents(&ids)
                 .map_err(|error| error.to_string())?;
             Ok(Value::Bool(true))
         }
         Request::ReorderSubtasks { id, ids } => {
-            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let mut store = load_store(data_file.as_deref())?;
             store
                 .reorder_subtasks(id, &ids)
                 .map_err(|error| error.to_string())?;
             Ok(Value::Bool(true))
         }
         Request::SetArchived { ids, archived } => {
-            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let mut store = load_store(data_file.as_deref())?;
             let count = store
                 .set_archived_for_ids(&ids, archived)
                 .map_err(|error| error.to_string())?;
             Ok(json!(count))
         }
         Request::ArchiveCompleted => {
-            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let mut store = load_store(data_file.as_deref())?;
             let count = store
                 .archive_completed()
                 .map_err(|error| error.to_string())?;
             Ok(json!(count))
         }
         Request::RestoreArchived => {
-            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let mut store = load_store(data_file.as_deref())?;
             let count = store
                 .restore_archived()
                 .map_err(|error| error.to_string())?;
             Ok(json!(count))
         }
         Request::ClearCompleted => {
-            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let mut store = load_store(data_file.as_deref())?;
             let count = store.clear_completed().map_err(|error| error.to_string())?;
             Ok(json!(count))
         }
         Request::ClearArchived => {
-            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let mut store = load_store(data_file.as_deref())?;
             let count = store.clear_archived().map_err(|error| error.to_string())?;
             Ok(json!(count))
         }
         Request::SetAllCompleted { completed } => {
-            let mut store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let mut store = load_store(data_file.as_deref())?;
             store
                 .set_all_completed(completed)
                 .map_err(|error| error.to_string())?;
             summaries(&store)
         }
+        Request::ListWeeklyReports => {
+            serde_json::to_value(list_weekly_reports()?).map_err(|error| error.to_string())
+        }
+        Request::CreateWeeklyReport { name } => {
+            let directory = weekly_report_directory(&name)?;
+            fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+            Ok(Value::String(name))
+        }
+        Request::RenameWeeklyReport { name, new_name } => {
+            let source = weekly_report_directory(&name)?;
+            let destination = weekly_report_directory(&new_name)?;
+            if !source.is_dir() {
+                return Err(format!("weekly report '{name}' was not found"));
+            }
+            if destination.exists() {
+                return Err(format!("weekly report '{new_name}' already exists"));
+            }
+            fs::rename(source, destination).map_err(|error| error.to_string())?;
+            Ok(Value::String(new_name))
+        }
+        Request::DeleteWeeklyReport { name } => {
+            let directory = weekly_report_directory(&name)?;
+            if directory.exists() {
+                fs::remove_dir_all(directory).map_err(|error| error.to_string())?;
+            }
+            Ok(Value::Bool(true))
+        }
+        Request::WeeklyReportDataPath { name, section } => Ok(Value::String(
+            weekly_report_data_path(&name, &section)?
+                .display()
+                .to_string(),
+        )),
         Request::DataPath => {
-            let store = TodoStore::load_default().map_err(|error| error.to_string())?;
+            let store = load_store(data_file.as_deref())?;
             Ok(Value::String(store.path().display().to_string()))
         }
         Request::RenderMarkdown { markdown } => {
             serde_json::to_value(render_markdown(&markdown)).map_err(|error| error.to_string())
         }
     }
+}
+
+fn load_store(data_file: Option<&Path>) -> Result<TodoStore, String> {
+    match data_file {
+        Some(path) => TodoStore::load(path.to_path_buf()),
+        None => TodoStore::load_default(),
+    }
+    .map_err(|error| error.to_string())
+}
+
+fn weekly_reports_directory() -> Result<PathBuf, String> {
+    let data_file = default_data_file().map_err(|error| error.to_string())?;
+    let parent = data_file
+        .parent()
+        .ok_or_else(|| "todo data file has no parent directory".to_owned())?;
+    Ok(parent.join("weekly-reports"))
+}
+
+fn validate_weekly_report_name(name: &str) -> Result<&str, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("weekly report name cannot be empty".to_owned());
+    }
+    if trimmed.len() > 80 {
+        return Err("weekly report name cannot exceed 80 bytes".to_owned());
+    }
+    if matches!(trimmed, "." | "..")
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.chars().any(char::is_control)
+    {
+        return Err("weekly report name contains unsupported characters".to_owned());
+    }
+    Ok(trimmed)
+}
+
+fn weekly_report_directory(name: &str) -> Result<PathBuf, String> {
+    Ok(weekly_reports_directory()?.join(validate_weekly_report_name(name)?))
+}
+
+fn weekly_report_data_path(name: &str, section: &str) -> Result<PathBuf, String> {
+    let filename = match section {
+        "done" => "done.json",
+        "plan" => "plan.json",
+        _ => return Err("weekly report section must be 'done' or 'plan'".to_owned()),
+    };
+    Ok(weekly_report_directory(name)?.join(filename))
+}
+
+fn list_weekly_reports() -> Result<Vec<String>, String> {
+    let directory = weekly_reports_directory()?;
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+    let mut reports = fs::read_dir(directory)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| validate_weekly_report_name(name).is_ok())
+        .collect::<Vec<_>>();
+    reports.sort_by(|a, b| b.cmp(a));
+    Ok(reports)
 }
 
 fn summaries(store: &TodoStore) -> Result<Value, String> {
@@ -980,6 +1102,46 @@ mod tests {
             children,
             Request::ReorderSubtasks { id: 7, ids } if ids == vec![10, 8, 9]
         ));
+    }
+
+    #[test]
+    fn data_file_scope_reuses_todo_operations_without_touching_default_store() {
+        let unique = format!(
+            "morrow-report-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be valid")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        let encoded_path = serde_json::to_string(&path.display().to_string()).unwrap();
+        let add = format!(r#"{{"command":"add","title":"Weekly unit","dataFile":{encoded_path}}}"#);
+        handle_request(&add).expect("scoped add should succeed");
+        let list = format!(r#"{{"command":"list","dataFile":{encoded_path}}}"#);
+        let value = handle_request(&list).expect("scoped list should succeed");
+        let items = value.as_array().expect("list should be an array");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["title"], "Weekly unit");
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("lock"));
+    }
+
+    #[test]
+    fn weekly_report_names_reject_path_traversal() {
+        assert!(validate_weekly_report_name("2026-08-16").is_ok());
+        assert!(validate_weekly_report_name("../escape").is_err());
+        assert!(validate_weekly_report_name("nested/report").is_err());
+        assert!(validate_weekly_report_name(" ").is_err());
+    }
+
+    #[test]
+    fn weekly_report_sections_map_to_separate_todo_files() {
+        let root = PathBuf::from("/tmp/morrow-weekly-reports");
+        let report = root.join("2026-08-16");
+        assert_eq!(report.join("done.json").file_name().unwrap(), "done.json");
+        assert_eq!(report.join("plan.json").file_name().unwrap(), "plan.json");
+        assert!(weekly_report_data_path("2026-08-16", "other").is_err());
     }
 
     #[test]

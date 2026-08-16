@@ -23,6 +23,18 @@ Legacy data is migrated on load. Parent-only records receive one child containin
 
 Migration uses the same exclusive file lock as normal writes.
 
+## Weekly reports
+
+The native app has a `Tasks / Weekly` workspace switch. A weekly report is a local folder whose default name is the creation date (`YYYY-MM-DD`), and the name can be changed in the creation dialog.
+
+```text
+~/Library/Application Support/com.xycdev.todo/weekly-reports/YYYY-MM-DD/
+├── done.json
+└── plan.json
+```
+
+`done.json` stores **This Week** and `plan.json` stores **Next Week**. Both files use the same `TodoStore` format as the normal task list, so report units keep the existing task model: Markdown content, priority, completion state, child tasks, drag ordering, and completion results. The JSON files are created lazily when the first task is written.
+
 ## Build the macOS app
 
 ```bash
