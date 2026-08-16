@@ -554,11 +554,6 @@ typedef NS_ENUM(NSInteger, TodoLanguage) {
     TodoLanguageEnglish = 1,
 };
 
-typedef NS_ENUM(NSInteger, TodoWorkspaceKind) {
-    TodoWorkspaceKindTasks = 0,
-    TodoWorkspaceKindWeeklyReport = 1,
-};
-
 typedef NS_ENUM(NSInteger, TodoViewMode) {
     TodoViewModeEdit = 0,
     TodoViewModeSplit = 1,
@@ -622,9 +617,7 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
 @property LiteButton *createTaskButton;
 @property LiteSegmentedControl *languageControl;
 @property LiteButton *refreshButton;
-@property LiteSegmentedControl *workspaceControl;
-@property LiteButton *reportMenuButton;
-@property LiteSegmentedControl *reportSectionControl;
+@property LiteButton *folderMenuButton;
 @property LiteButton *toggleAllButton;
 @property LiteButton *filterMenuButton;
 @property NSScrollView *scrollView;
@@ -642,18 +635,14 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
         _refreshButton = [[LiteButton alloc] initWithTitle:@"↻" style:LiteButtonStylePlain];
         _refreshButton.toolTip = @"刷新";
         _refreshButton.accessibilityLabel = @"刷新";
-        _workspaceControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"任务", @"周报"]];
-        _reportMenuButton = [[LiteButton alloc] initWithTitle:@"选择周报 ▾" style:LiteButtonStyleBordered];
-        _reportMenuButton.hidden = YES;
-        _reportSectionControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"本周完成", @"下周计划"]];
-        _reportSectionControl.hidden = YES;
+        _folderMenuButton = [[LiteButton alloc] initWithTitle:@"任务 ▾" style:LiteButtonStyleBordered];
         _toggleAllButton = [[LiteButton alloc] initWithTitle:@"全部完成" style:LiteButtonStylePlain];
         _filterMenuButton = [[LiteButton alloc] initWithTitle:@"筛选/排序 ▾" style:LiteButtonStyleBordered];
         _tableView = [[TaskTableView alloc] initWithFrame:NSZeroRect]; NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"task"]; [_tableView addTableColumn:column]; _tableView.headerView = nil; _tableView.rowHeight = 62; _tableView.intercellSpacing = NSMakeSize(0, 1); _tableView.backgroundColor = NSColor.clearColor;
         _scrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect]; _scrollView.documentView = _tableView; _scrollView.hasVerticalScroller = YES; _scrollView.autohidesScrollers = YES; _scrollView.drawsBackground = NO;
         _countLabel = [NSTextField labelWithString:@""]; _countLabel.font = [NSFont systemFontOfSize:11]; _countLabel.textColor = NSColor.secondaryLabelColor;
         _managementButton = [[LiteButton alloc] initWithTitle:@"管理…" style:LiteButtonStylePlain];
-        for (NSView *v in @[_dateLabel,_headingLabel,_createTaskButton,_languageControl,_refreshButton,_workspaceControl,_reportMenuButton,_reportSectionControl,_toggleAllButton,_filterMenuButton,_scrollView,_countLabel,_managementButton]) [self addSubview:v];
+        for (NSView *v in @[_dateLabel,_headingLabel,_createTaskButton,_languageControl,_refreshButton,_folderMenuButton,_toggleAllButton,_filterMenuButton,_scrollView,_countLabel,_managementButton]) [self addSubview:v];
     }
     return self;
 }
@@ -670,25 +659,22 @@ static NSString *TodoPriorityValue(TodoPriority priority) {
     NSSize newTaskSize = self.createTaskButton.intrinsicContentSize;
     self.headingLabel.frame = NSMakeRect(16, 39, MAX(80, w - newTaskSize.width - 48), 31);
     self.createTaskButton.frame = NSMakeRect(w - newTaskSize.width - 12, 40, newTaskSize.width, 30);
-    NSSize workspaceSize = self.workspaceControl.intrinsicContentSize;
-    self.workspaceControl.frame = NSMakeRect(10, 82, workspaceSize.width, 28);
-    NSSize reportMenuSize = self.reportMenuButton.intrinsicContentSize;
-    CGFloat reportMenuWidth = MIN(reportMenuSize.width, MAX(72, w - NSMaxX(self.workspaceControl.frame) - 20));
-    self.reportMenuButton.frame = NSMakeRect(w - reportMenuWidth - 10, 82, reportMenuWidth, 28);
-    self.toggleAllButton.frame = NSMakeRect(10, 118, self.toggleAllButton.intrinsicContentSize.width, 28);
-    NSSize reportSectionSize = self.reportSectionControl.intrinsicContentSize;
-    self.reportSectionControl.frame = NSMakeRect(10, 118, reportSectionSize.width, 28);
+    NSSize toggleAllSize = self.toggleAllButton.intrinsicContentSize;
+    self.toggleAllButton.frame = NSMakeRect(10, 83, toggleAllSize.width, 28);
     NSSize filterMenuSize = self.filterMenuButton.intrinsicContentSize;
-    self.filterMenuButton.frame = NSMakeRect(w - filterMenuSize.width - 10, 118, filterMenuSize.width, 28);
+    self.filterMenuButton.frame = NSMakeRect(w - filterMenuSize.width - 10, 83, filterMenuSize.width, 28);
+    CGFloat folderLeft = NSMaxX(self.toggleAllButton.frame) + 6.0;
+    CGFloat folderRight = NSMinX(self.filterMenuButton.frame) - 6.0;
+    self.folderMenuButton.frame = NSMakeRect(folderLeft, 83, MAX(0.0, folderRight - folderLeft), 28);
     NSSize managementSize = self.managementButton.intrinsicContentSize;
     self.countLabel.frame = NSMakeRect(12, h - 31, MAX(40, w - managementSize.width - 30), 18);
     self.managementButton.frame = NSMakeRect(w - managementSize.width - 8, h - 37, managementSize.width, 28);
-    self.scrollView.frame = NSMakeRect(0, 153, w, MAX(0, h - 153 - 42));
+    self.scrollView.frame = NSMakeRect(0, 117, w, MAX(0, h - 117 - 42));
 }
 - (void)drawRect:(NSRect)dirtyRect {
     [NSColor.controlBackgroundColor setFill]; NSRectFill(self.bounds);
     [NSColor.separatorColor setFill];
-    NSRectFill(NSMakeRect(0, 73, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, 152, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, NSHeight(self.bounds)-42, NSWidth(self.bounds), 1));
+    NSRectFill(NSMakeRect(0, 73, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, 116, NSWidth(self.bounds), 1)); NSRectFill(NSMakeRect(0, NSHeight(self.bounds)-42, NSWidth(self.bounds), 1));
 }
 @end
 
@@ -1025,10 +1011,8 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @property NSArray<NSDictionary *> *filtered;
 @property NSArray<NSDictionary *> *rows;
 @property TodoLanguage language;
-@property TodoWorkspaceKind workspaceKind;
-@property NSArray<NSString *> *weeklyReports;
-@property(nullable) NSString *selectedWeeklyReport;
-@property NSInteger weeklySection;
+@property NSArray<NSString *> *folders;
+@property(nullable) NSString *selectedFolder;
 @property TodoViewMode viewMode;
 @property TodoSortMode sortMode;
 @property NSInteger filterIndex;
@@ -1052,10 +1036,10 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @property BOOL benchmarkRan;
 - (void)showManagementMenu;
 - (void)showFilterMenu;
-- (void)changeWorkspace:(NSInteger)workspace;
-- (void)changeWeeklySection:(NSInteger)section;
-- (void)showWeeklyReportMenu;
-- (void)createWeeklyReport;
+- (void)showFolderMenu;
+- (void)createFolder;
+- (void)renameCurrentFolder;
+- (void)deleteCurrentFolder;
 - (NSMenu *)buildFilterMenu;
 - (void)updateFilterMenuPresentation;
 - (void)addSubtaskToParentID:(NSNumber *)parentID;
@@ -1067,8 +1051,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 @implementation TodoController
 - (void)loadView {
     self.summaries = @[]; self.filtered = @[]; self.rows = @[]; self.editorSnapshot = @""; self.completionResultSnapshot = @"";
-    self.workspaceKind = TodoWorkspaceKindTasks; self.weeklyReports = @[]; self.weeklySection = 0;
-    BridgeUseDataFile(nil);
+    self.folders = @[]; self.selectedFolder = nil; BridgeUseDataFile(nil);
     self.resultExpansionOverrides = [NSMutableDictionary dictionary];
     self.collapsedParentIDs = [NSMutableSet set];
     NSArray *savedCollapsedParentIDs = [NSUserDefaults.standardUserDefaults arrayForKey:TodoCollapsedParentIDsDefaultsKey];
@@ -1103,9 +1086,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     self.sidebar.createTaskButton.handler = ^{ [weakSelf addEditableTask]; };
     self.sidebar.languageControl.changeHandler = ^(NSInteger index) { [weakSelf changeLanguage:(TodoLanguage)index]; };
     self.sidebar.refreshButton.handler = ^{ [weakSelf refreshFromDisk:nil]; };
-    self.sidebar.workspaceControl.changeHandler = ^(NSInteger index) { [weakSelf changeWorkspace:index]; };
-    self.sidebar.reportMenuButton.handler = ^{ [weakSelf showWeeklyReportMenu]; };
-    self.sidebar.reportSectionControl.changeHandler = ^(NSInteger index) { [weakSelf changeWeeklySection:index]; };
+    self.sidebar.folderMenuButton.handler = ^{ [weakSelf showFolderMenu]; };
     self.sidebar.toggleAllButton.handler = ^{ [weakSelf toggleAll]; };
     self.sidebar.filterMenuButton.handler = ^{ [weakSelf showFilterMenu]; };
     self.sidebar.managementButton.handler = ^{ [weakSelf showManagementMenu]; };
@@ -1128,57 +1109,39 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     [self.split adjustSubviews];
     [self runBenchmarkMode];
 }
-- (NSString *)todayWeeklyReportName {
+- (NSString *)todayFolderName {
     NSDateFormatter *formatter = [NSDateFormatter new];
     formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
     formatter.dateFormat = @"yyyy-MM-dd";
     return [formatter stringFromDate:NSDate.date];
 }
-- (BOOL)reloadWeeklyReportsPresentingErrors:(BOOL)presentErrors {
+- (BOOL)reloadFoldersPresentingErrors:(BOOL)presentErrors {
     NSError *error = nil;
-    id value = BridgeCallUnscoped(@{@"command": @"listWeeklyReports"}, &error);
+    id value = BridgeCallUnscoped(@{@"command": @"listFolders"}, &error);
     if (![value isKindOfClass:NSArray.class]) {
         if (presentErrors && error) [self showError:error];
         return NO;
     }
-    self.weeklyReports = value;
+    self.folders = value;
     return YES;
 }
-- (BOOL)useWeeklyReport:(NSString *)name section:(NSInteger)section {
-    if (!name.length) return NO;
-    NSString *sectionName = section == 1 ? @"plan" : @"done";
+- (BOOL)useFolder:(NSString * _Nullable)name {
+    if (!name.length) {
+        self.selectedFolder = nil;
+        BridgeUseDataFile(nil);
+        return YES;
+    }
     NSError *error = nil;
-    id value = BridgeCallUnscoped(@{
-        @"command": @"weeklyReportDataPath",
-        @"name": name,
-        @"section": sectionName,
-    }, &error);
+    id value = BridgeCallUnscoped(@{@"command": @"folderDataPath", @"name": name}, &error);
     if (![value isKindOfClass:NSString.class]) {
         if (error) [self showError:error];
         return NO;
     }
-    self.selectedWeeklyReport = name;
-    self.weeklySection = section == 1 ? 1 : 0;
+    self.selectedFolder = name;
     BridgeUseDataFile(value);
     return YES;
 }
-- (BOOL)ensureWeeklyReportSelection {
-    if (![self reloadWeeklyReportsPresentingErrors:YES]) return NO;
-    NSString *name = self.selectedWeeklyReport;
-    if (!name.length || ![self.weeklyReports containsObject:name]) name = self.weeklyReports.firstObject;
-    if (!name.length) {
-        name = [self todayWeeklyReportName];
-        NSError *error = nil;
-        id created = BridgeCallUnscoped(@{@"command": @"createWeeklyReport", @"name": name}, &error);
-        if (!created) {
-            [self showError:error];
-            return NO;
-        }
-        if (![self reloadWeeklyReportsPresentingErrors:YES]) return NO;
-    }
-    return [self useWeeklyReport:name section:self.weeklySection];
-}
-- (void)resetSelectionForWorkspaceChange {
+- (void)resetSelectionForDataScopeChange {
     self.selectedID = nil;
     self.selectedParentID = nil;
     self.selectedIsSubtask = NO;
@@ -1187,53 +1150,27 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     [self.collapsedParentIDs removeAllObjects];
     [self clearCurrent];
 }
-- (void)changeWorkspace:(NSInteger)workspace {
-    TodoWorkspaceKind next = workspace == TodoWorkspaceKindWeeklyReport ? TodoWorkspaceKindWeeklyReport : TodoWorkspaceKindTasks;
-    if (next == self.workspaceKind) return;
-    if (![self saveIfNeeded]) {
-        self.sidebar.workspaceControl.selectedIndex = self.workspaceKind;
-        return;
-    }
-    [self resetSelectionForWorkspaceChange];
-    self.workspaceKind = next;
-    if (next == TodoWorkspaceKindTasks) {
-        BridgeUseDataFile(nil);
-    } else if (![self ensureWeeklyReportSelection]) {
-        self.workspaceKind = TodoWorkspaceKindTasks;
-        BridgeUseDataFile(nil);
-    }
-    [self applyLanguage];
-    [self reloadSummaries];
-}
-- (void)changeWeeklySection:(NSInteger)section {
-    if (self.workspaceKind != TodoWorkspaceKindWeeklyReport) return;
-    NSInteger normalized = section == 1 ? 1 : 0;
-    if (normalized == self.weeklySection) return;
-    if (![self saveIfNeeded]) {
-        self.sidebar.reportSectionControl.selectedIndex = self.weeklySection;
-        return;
-    }
-    [self resetSelectionForWorkspaceChange];
-    if (![self useWeeklyReport:self.selectedWeeklyReport section:normalized]) return;
-    [self applyLanguage];
-    [self reloadSummaries];
-}
-- (void)selectWeeklyReportFromMenu:(NSMenuItem *)sender {
-    NSString *name = [sender.representedObject isKindOfClass:NSString.class] ? sender.representedObject : nil;
-    if (!name.length || [name isEqualToString:self.selectedWeeklyReport]) return;
+- (void)switchToFolder:(NSString * _Nullable)name {
+    BOOL same = (!name.length && !self.selectedFolder.length) || [name isEqualToString:self.selectedFolder];
+    if (same) return;
     if (![self saveIfNeeded]) return;
-    [self resetSelectionForWorkspaceChange];
-    if (![self useWeeklyReport:name section:self.weeklySection]) return;
+    [self resetSelectionForDataScopeChange];
+    if (![self useFolder:name]) return;
     [self applyLanguage];
     [self reloadSummaries];
 }
-- (void)createWeeklyReport {
+- (void)selectFolderFromMenu:(NSMenuItem *)sender {
+    id represented = sender.representedObject;
+    NSString *name = [represented isKindOfClass:NSString.class] ? represented : nil;
+    [self switchToFolder:name];
+}
+- (void)createFolder {
     if (![self saveIfNeeded]) return;
     NSAlert *alert = [NSAlert new];
-    alert.messageText = TodoLocalized(self.language, @"新建周报", @"New Weekly Report");
-    alert.informativeText = TodoLocalized(self.language, @"周报会创建为独立文件夹。", @"The report is stored as a separate folder.");
+    alert.messageText = TodoLocalized(self.language, @"新建文件夹", @"New Folder");
+    alert.informativeText = TodoLocalized(self.language, @"文件夹内仍使用普通 Todo task。", @"Folders contain the same Todo tasks as the root list.");
     NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
-    field.stringValue = [self todayWeeklyReportName];
+    field.stringValue = [self todayFolderName];
     field.selectable = YES;
     field.editable = YES;
     alert.accessoryView = field;
@@ -1243,31 +1180,87 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     NSString *name = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (!name.length) return;
     NSError *error = nil;
-    if (!BridgeCallUnscoped(@{@"command": @"createWeeklyReport", @"name": name}, &error)) {
+    if (!BridgeCallUnscoped(@{@"command": @"createFolder", @"name": name}, &error)) {
         [self showError:error];
         return;
     }
-    [self reloadWeeklyReportsPresentingErrors:YES];
-    [self resetSelectionForWorkspaceChange];
-    if (![self useWeeklyReport:name section:0]) return;
+    [self reloadFoldersPresentingErrors:NO];
+    [self switchToFolder:name];
+}
+- (void)renameCurrentFolder {
+    if (!self.selectedFolder.length || ![self saveIfNeeded]) return;
+    NSString *oldName = self.selectedFolder;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = TodoLocalized(self.language, @"重命名文件夹", @"Rename Folder");
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+    field.stringValue = oldName;
+    field.selectable = YES;
+    field.editable = YES;
+    alert.accessoryView = field;
+    [alert addButtonWithTitle:TodoLocalized(self.language, @"重命名", @"Rename")];
+    [alert addButtonWithTitle:TodoLocalized(self.language, @"取消", @"Cancel")];
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+    NSString *newName = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!newName.length || [newName isEqualToString:oldName]) return;
+    BridgeUseDataFile(nil);
+    NSError *error = nil;
+    if (!BridgeCallUnscoped(@{@"command": @"renameFolder", @"name": oldName, @"newName": newName}, &error)) {
+        [self useFolder:oldName];
+        [self showError:error];
+        return;
+    }
+    self.selectedFolder = nil;
+    [self reloadFoldersPresentingErrors:NO];
+    [self useFolder:newName];
     [self applyLanguage];
     [self reloadSummaries];
 }
-- (void)showWeeklyReportMenu {
-    if (self.workspaceKind != TodoWorkspaceKindWeeklyReport) return;
-    [self reloadWeeklyReportsPresentingErrors:NO];
+- (void)deleteCurrentFolder {
+    if (!self.selectedFolder.length || ![self saveIfNeeded]) return;
+    NSString *name = self.selectedFolder;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = [NSString stringWithFormat:TodoLocalized(self.language, @"删除文件夹“%@”？", @"Delete folder “%@”?"), name];
+    alert.informativeText = TodoLocalized(self.language, @"文件夹内的任务也会被永久删除，此操作无法撤销。", @"Tasks inside the folder will also be permanently deleted. This cannot be undone.");
+    [alert addButtonWithTitle:TodoLocalized(self.language, @"删除", @"Delete")];
+    [alert addButtonWithTitle:TodoLocalized(self.language, @"取消", @"Cancel")];
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+    BridgeUseDataFile(nil);
+    NSError *error = nil;
+    if (!BridgeCallUnscoped(@{@"command": @"deleteFolder", @"name": name}, &error)) {
+        [self useFolder:name];
+        [self showError:error];
+        return;
+    }
+    [self resetSelectionForDataScopeChange];
+    self.selectedFolder = nil;
+    [self reloadFoldersPresentingErrors:NO];
+    [self applyLanguage];
+    [self reloadSummaries];
+}
+- (void)showFolderMenu {
+    [self reloadFoldersPresentingErrors:NO];
     NSMenu *menu = [NSMenu new];
     menu.autoenablesItems = NO;
-    NSMenuItem *create = [menu addItemWithTitle:TodoLocalized(self.language, @"新建周报…", @"New Weekly Report…") action:@selector(createWeeklyReport) keyEquivalent:@""];
-    create.target = self;
-    [menu addItem:NSMenuItem.separatorItem];
-    for (NSString *name in self.weeklyReports) {
-        NSMenuItem *item = [menu addItemWithTitle:name action:@selector(selectWeeklyReportFromMenu:) keyEquivalent:@""];
+    NSMenuItem *root = [menu addItemWithTitle:TodoLocalized(self.language, @"任务", @"Tasks") action:@selector(selectFolderFromMenu:) keyEquivalent:@""];
+    root.target = self;
+    root.representedObject = NSNull.null;
+    root.state = self.selectedFolder.length ? NSControlStateValueOff : NSControlStateValueOn;
+    for (NSString *name in self.folders) {
+        NSMenuItem *item = [menu addItemWithTitle:name action:@selector(selectFolderFromMenu:) keyEquivalent:@""];
         item.target = self;
         item.representedObject = name;
-        item.state = [name isEqualToString:self.selectedWeeklyReport] ? NSControlStateValueOn : NSControlStateValueOff;
+        item.state = [name isEqualToString:self.selectedFolder] ? NSControlStateValueOn : NSControlStateValueOff;
     }
-    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, 0) inView:self.sidebar.reportMenuButton];
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *create = [menu addItemWithTitle:TodoLocalized(self.language, @"新建文件夹…", @"New Folder…") action:@selector(createFolder) keyEquivalent:@""];
+    create.target = self;
+    if (self.selectedFolder.length) {
+        NSMenuItem *rename = [menu addItemWithTitle:TodoLocalized(self.language, @"重命名当前文件夹…", @"Rename Current Folder…") action:@selector(renameCurrentFolder) keyEquivalent:@""];
+        rename.target = self;
+        NSMenuItem *delete = [menu addItemWithTitle:TodoLocalized(self.language, @"删除当前文件夹…", @"Delete Current Folder…") action:@selector(deleteCurrentFolder) keyEquivalent:@""];
+        delete.target = self;
+    }
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, 0) inView:self.sidebar.folderMenuButton];
 }
 
 - (void)changeViewMode:(NSInteger)viewMode {
@@ -1385,29 +1378,16 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
     dateFormatter.dateFormat = english ? @"EEEE, MMM d" : @"M月d日 EEEE";
     self.sidebar.dateLabel.stringValue = [dateFormatter stringFromDate:NSDate.date];
 
-    BOOL weekly = self.workspaceKind == TodoWorkspaceKindWeeklyReport;
-    self.sidebar.workspaceControl.labels = english ? @[@"Tasks", @"Weekly"] : @[@"任务", @"周报"];
-    self.sidebar.workspaceControl.selectedIndex = self.workspaceKind;
-    self.sidebar.reportSectionControl.labels = english ? @[@"This Week", @"Next Week"] : @[@"本周完成", @"下周计划"];
-    self.sidebar.reportSectionControl.selectedIndex = self.weeklySection;
-    self.sidebar.reportMenuButton.hidden = !weekly;
-    self.sidebar.reportSectionControl.hidden = !weekly;
-    self.sidebar.toggleAllButton.hidden = weekly;
-    self.sidebar.reportMenuButton.title = self.selectedWeeklyReport.length
-        ? [NSString stringWithFormat:@"%@ ▾", self.selectedWeeklyReport]
-        : TodoLocalized(self.language, @"选择周报 ▾", @"Choose Report ▾");
-    self.sidebar.headingLabel.stringValue = weekly
-        ? [NSString stringWithFormat:TodoLocalized(self.language, @"周报 · %@", @"Weekly · %@"), self.selectedWeeklyReport ?: @"—"]
-        : TodoLocalized(self.language, @"今天要做什么？", @"Today's tasks");
+    self.sidebar.headingLabel.stringValue = TodoLocalized(self.language, @"今天要做什么？", @"Today's tasks");
     self.sidebar.createTaskButton.title = TodoLocalized(self.language, @"新建事项", @"New Project");
-    self.sidebar.refreshButton.toolTip = weekly
-        ? TodoLocalized(self.language, @"刷新周报（⌘R）", @"Refresh weekly report (⌘R)")
-        : TodoLocalized(self.language, @"刷新任务（⌘R）", @"Refresh tasks (⌘R)");
-    self.sidebar.refreshButton.accessibilityLabel = weekly
-        ? TodoLocalized(self.language, @"刷新周报", @"Refresh weekly report")
-        : TodoLocalized(self.language, @"刷新任务", @"Refresh tasks");
-    self.sidebar.reportMenuButton.accessibilityLabel = TodoLocalized(self.language, @"选择周报", @"Choose weekly report");
-    self.sidebar.reportSectionControl.accessibilityLabel = TodoLocalized(self.language, @"周报区段", @"Weekly report section");
+    self.sidebar.refreshButton.toolTip = TodoLocalized(self.language, @"刷新任务（⌘R）", @"Refresh tasks (⌘R)");
+    self.sidebar.refreshButton.accessibilityLabel = TodoLocalized(self.language, @"刷新任务", @"Refresh tasks");
+    NSString *folderTitle = self.selectedFolder.length ? self.selectedFolder : TodoLocalized(self.language, @"任务", @"Tasks");
+    self.sidebar.folderMenuButton.title = [NSString stringWithFormat:@"%@ ▾", folderTitle];
+    self.sidebar.folderMenuButton.accessibilityLabel = TodoLocalized(self.language, @"文件夹", @"Folder");
+    self.sidebar.folderMenuButton.toolTip = self.selectedFolder.length
+        ? [NSString stringWithFormat:TodoLocalized(self.language, @"当前文件夹：%@", @"Current folder: %@"), self.selectedFolder]
+        : TodoLocalized(self.language, @"根任务", @"Root tasks");
     self.sidebar.filterMenuButton.accessibilityLabel = TodoLocalized(self.language, @"筛选和排序", @"Filter and sort");
     self.sidebar.managementButton.title = TodoLocalized(self.language, @"管理…", @"Manage…");
     self.sidebar.managementButton.accessibilityLabel = TodoLocalized(self.language, @"管理任务", @"Manage tasks");
@@ -1786,8 +1766,16 @@ toPasteboard:(NSPasteboard *)pasteboard {
 - (void)refreshFromDisk:(id)sender {
     if (![self saveIfNeeded]) return;
     NSNumber *selectedID = self.selectedID;
-    if (self.workspaceKind == TodoWorkspaceKindWeeklyReport && ![self ensureWeeklyReportSelection]) return;
-    [self applyLanguage];
+    if (self.selectedFolder.length) {
+        if (![self reloadFoldersPresentingErrors:YES]) return;
+        if (![self.folders containsObject:self.selectedFolder]) {
+            [self resetSelectionForDataScopeChange];
+            [self useFolder:nil];
+            [self applyLanguage];
+        } else if (![self useFolder:self.selectedFolder]) {
+            return;
+        }
+    }
     [self reloadSummaries];
     NSDictionary *summary = selectedID ? [self summaryForID:selectedID] : nil;
     if (summary && [summary[@"archived"] boolValue] == self.archiveView) {

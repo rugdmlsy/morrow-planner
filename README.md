@@ -23,17 +23,17 @@ Legacy data is migrated on load. Parent-only records receive one child containin
 
 Migration uses the same exclusive file lock as normal writes.
 
-## Weekly reports
+## Folders
 
-The native app has a `Tasks / Weekly` workspace switch. A weekly report is a local folder whose default name is the creation date (`YYYY-MM-DD`), and the name can be changed in the creation dialog.
+The native app can scope the task list to local folders. The root task list remains unchanged, while each folder stores an independent TodoStore at:
 
 ```text
-~/Library/Application Support/com.xycdev.todo/weekly-reports/YYYY-MM-DD/
-├── done.json
-└── plan.json
+~/Library/Application Support/com.xycdev.todo/folders/<folder-name>/todos.json
 ```
 
-`done.json` stores **This Week** and `plan.json` stores **Next Week**. Both files use the same `TodoStore` format as the normal task list, so report units keep the existing task model: Markdown content, priority, completion state, child tasks, drag ordering, and completion results. The JSON files are created lazily when the first task is written.
+Use the folder menu in the sidebar to switch between the root task list and folders, create a folder, rename the current folder, or delete it. New folder names default to the current date (`YYYY-MM-DD`), which makes date-based weekly notes convenient without introducing a separate weekly-report mode. Tasks inside a folder retain the normal task model, including Markdown content, priority, completion state, child tasks, drag ordering, and completion results.
+
+The first folder-based release used `weekly-reports/<date>/done.json` and `plan.json`. Those folders are migrated into the generic folder store on discovery; the two former sections are merged into one task list and task IDs are remapped when needed.
 
 ## Build the macOS app
 

@@ -75,21 +75,20 @@ enum Request {
     SetAllCompleted {
         completed: bool,
     },
-    ListWeeklyReports,
-    CreateWeeklyReport {
+    ListFolders,
+    CreateFolder {
         name: String,
     },
-    RenameWeeklyReport {
+    RenameFolder {
         name: String,
         #[serde(rename = "newName")]
         new_name: String,
     },
-    DeleteWeeklyReport {
+    DeleteFolder {
         name: String,
     },
-    WeeklyReportDataPath {
+    FolderDataPath {
         name: String,
-        section: String,
     },
     DataPath,
     RenderMarkdown {
@@ -407,37 +406,42 @@ fn handle_request(request: &str) -> Result<Value, String> {
                 .map_err(|error| error.to_string())?;
             summaries(&store)
         }
-        Request::ListWeeklyReports => {
-            serde_json::to_value(list_weekly_reports()?).map_err(|error| error.to_string())
+        Request::ListFolders => {
+            serde_json::to_value(list_folders()?).map_err(|error| error.to_string())
         }
-        Request::CreateWeeklyReport { name } => {
-            let directory = weekly_report_directory(&name)?;
-            fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-            Ok(Value::String(name))
+        Request::CreateFolder { name } => {
+            fs::create_dir_all(folders_directory()?).map_err(|error| error.to_string())?;
+            let directory = folder_directory(&name)?;
+            match fs::create_dir(&directory) {
+                Ok(()) => Ok(Value::String(directory.display().to_string())),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    Err(format!("folder '{name}' already exists"))
+                }
+                Err(error) => Err(error.to_string()),
+            }
         }
-        Request::RenameWeeklyReport { name, new_name } => {
-            let source = weekly_report_directory(&name)?;
-            let destination = weekly_report_directory(&new_name)?;
+        Request::RenameFolder { name, new_name } => {
+            let source = folder_directory(&name)?;
+            let destination = folder_directory(&new_name)?;
             if !source.is_dir() {
-                return Err(format!("weekly report '{name}' was not found"));
+                return Err(format!("folder '{name}' was not found"));
             }
             if destination.exists() {
-                return Err(format!("weekly report '{new_name}' already exists"));
+                return Err(format!("folder '{new_name}' already exists"));
             }
-            fs::rename(source, destination).map_err(|error| error.to_string())?;
-            Ok(Value::String(new_name))
+            fs::rename(source, &destination).map_err(|error| error.to_string())?;
+            Ok(Value::String(destination.display().to_string()))
         }
-        Request::DeleteWeeklyReport { name } => {
-            let directory = weekly_report_directory(&name)?;
-            if directory.exists() {
-                fs::remove_dir_all(directory).map_err(|error| error.to_string())?;
+        Request::DeleteFolder { name } => {
+            let directory = folder_directory(&name)?;
+            if !directory.is_dir() {
+                return Err(format!("folder '{name}' was not found"));
             }
+            fs::remove_dir_all(directory).map_err(|error| error.to_string())?;
             Ok(Value::Bool(true))
         }
-        Request::WeeklyReportDataPath { name, section } => Ok(Value::String(
-            weekly_report_data_path(&name, &section)?
-                .display()
-                .to_string(),
+        Request::FolderDataPath { name } => Ok(Value::String(
+            folder_data_path(&name)?.display().to_string(),
         )),
         Request::DataPath => {
             let store = load_store(data_file.as_deref())?;
@@ -449,67 +453,138 @@ fn handle_request(request: &str) -> Result<Value, String> {
     }
 }
 
-fn load_store(data_file: Option<&Path>) -> Result<TodoStore, String> {
-    match data_file {
+fn load_store(path: Option<&Path>) -> Result<TodoStore, String> {
+    match path {
         Some(path) => TodoStore::load(path.to_path_buf()),
         None => TodoStore::load_default(),
     }
     .map_err(|error| error.to_string())
 }
 
-fn weekly_reports_directory() -> Result<PathBuf, String> {
+fn data_directory() -> Result<PathBuf, String> {
     let data_file = default_data_file().map_err(|error| error.to_string())?;
-    let parent = data_file
+    data_file
         .parent()
-        .ok_or_else(|| "todo data file has no parent directory".to_owned())?;
-    Ok(parent.join("weekly-reports"))
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "todo data file has no parent directory".to_owned())
 }
 
-fn validate_weekly_report_name(name: &str) -> Result<&str, String> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return Err("weekly report name cannot be empty".to_owned());
+fn folders_directory() -> Result<PathBuf, String> {
+    Ok(data_directory()?.join("folders"))
+}
+
+fn legacy_weekly_reports_directory() -> Result<PathBuf, String> {
+    Ok(data_directory()?.join("weekly-reports"))
+}
+
+fn validate_folder_name(name: &str) -> Result<&str, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("folder name cannot be empty".to_owned());
     }
-    if trimmed.len() > 80 {
-        return Err("weekly report name cannot exceed 80 bytes".to_owned());
+    if name.len() > 80 {
+        return Err("folder name cannot exceed 80 bytes".to_owned());
     }
-    if matches!(trimmed, "." | "..")
-        || trimmed.contains('/')
-        || trimmed.contains('\\')
-        || trimmed.chars().any(char::is_control)
+    if name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.chars().any(char::is_control)
     {
-        return Err("weekly report name contains unsupported characters".to_owned());
+        return Err("folder name contains unsupported characters".to_owned());
     }
-    Ok(trimmed)
+    Ok(name)
 }
 
-fn weekly_report_directory(name: &str) -> Result<PathBuf, String> {
-    Ok(weekly_reports_directory()?.join(validate_weekly_report_name(name)?))
+fn folder_directory(name: &str) -> Result<PathBuf, String> {
+    Ok(folders_directory()?.join(validate_folder_name(name)?))
 }
 
-fn weekly_report_data_path(name: &str, section: &str) -> Result<PathBuf, String> {
-    let filename = match section {
-        "done" => "done.json",
-        "plan" => "plan.json",
-        _ => return Err("weekly report section must be 'done' or 'plan'".to_owned()),
-    };
-    Ok(weekly_report_directory(name)?.join(filename))
+fn folder_data_path(name: &str) -> Result<PathBuf, String> {
+    Ok(folder_directory(name)?.join("todos.json"))
 }
 
-fn list_weekly_reports() -> Result<Vec<String>, String> {
-    let directory = weekly_reports_directory()?;
+fn list_folders() -> Result<Vec<String>, String> {
+    migrate_legacy_weekly_reports()?;
+    let directory = folders_directory()?;
     if !directory.exists() {
         return Ok(Vec::new());
     }
-    let mut reports = fs::read_dir(directory)
+    let mut names = fs::read_dir(directory)
         .map_err(|error| error.to_string())?
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| validate_weekly_report_name(name).is_ok())
+        .filter(|name| validate_folder_name(name).is_ok())
         .collect::<Vec<_>>();
-    reports.sort_by(|a, b| b.cmp(a));
-    Ok(reports)
+    names.sort_by(|left, right| right.cmp(left));
+    Ok(names)
+}
+
+fn migrate_legacy_weekly_reports() -> Result<(), String> {
+    let source_root = legacy_weekly_reports_directory()?;
+    if !source_root.is_dir() {
+        return Ok(());
+    }
+    let destination_root = folders_directory()?;
+    fs::create_dir_all(&destination_root).map_err(|error| error.to_string())?;
+    for entry in fs::read_dir(source_root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if !entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if validate_folder_name(&name).is_err() {
+            continue;
+        }
+        let destination = destination_root.join(&name);
+        if destination.exists() {
+            continue;
+        }
+        fs::create_dir(&destination).map_err(|error| error.to_string())?;
+        let merged = merge_legacy_weekly_todos(&entry.path())?;
+        if !merged.is_empty() {
+            let data = serde_json::to_vec(&merged).map_err(|error| error.to_string())?;
+            fs::write(destination.join("todos.json"), data).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn merge_legacy_weekly_todos(directory: &Path) -> Result<Vec<Todo>, String> {
+    let mut merged = read_optional_todos(&directory.join("done.json"))?;
+    let mut next_id = merged
+        .iter()
+        .flat_map(|todo| {
+            std::iter::once(todo.task.id).chain(todo.subtasks.iter().map(|task| task.id))
+        })
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    for mut todo in read_optional_todos(&directory.join("plan.json"))? {
+        todo.task.id = next_id;
+        next_id = next_id.saturating_add(1);
+        for task in &mut todo.subtasks {
+            task.id = next_id;
+            next_id = next_id.saturating_add(1);
+        }
+        merged.push(todo);
+    }
+    Ok(merged)
+}
+
+fn read_optional_todos(path: &Path) -> Result<Vec<Todo>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    serde_json::from_slice(&bytes).map_err(|error| error.to_string())
 }
 
 fn summaries(store: &TodoStore) -> Result<Value, String> {
@@ -1105,46 +1180,6 @@ mod tests {
     }
 
     #[test]
-    fn data_file_scope_reuses_todo_operations_without_touching_default_store() {
-        let unique = format!(
-            "morrow-report-{}-{}.json",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock should be valid")
-                .as_nanos()
-        );
-        let path = std::env::temp_dir().join(unique);
-        let encoded_path = serde_json::to_string(&path.display().to_string()).unwrap();
-        let add = format!(r#"{{"command":"add","title":"Weekly unit","dataFile":{encoded_path}}}"#);
-        handle_request(&add).expect("scoped add should succeed");
-        let list = format!(r#"{{"command":"list","dataFile":{encoded_path}}}"#);
-        let value = handle_request(&list).expect("scoped list should succeed");
-        let items = value.as_array().expect("list should be an array");
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0]["title"], "Weekly unit");
-        let _ = fs::remove_file(&path);
-        let _ = fs::remove_file(path.with_extension("lock"));
-    }
-
-    #[test]
-    fn weekly_report_names_reject_path_traversal() {
-        assert!(validate_weekly_report_name("2026-08-16").is_ok());
-        assert!(validate_weekly_report_name("../escape").is_err());
-        assert!(validate_weekly_report_name("nested/report").is_err());
-        assert!(validate_weekly_report_name(" ").is_err());
-    }
-
-    #[test]
-    fn weekly_report_sections_map_to_separate_todo_files() {
-        let root = PathBuf::from("/tmp/morrow-weekly-reports");
-        let report = root.join("2026-08-16");
-        assert_eq!(report.join("done.json").file_name().unwrap(), "done.json");
-        assert_eq!(report.join("plan.json").file_name().unwrap(), "plan.json");
-        assert!(weekly_report_data_path("2026-08-16", "other").is_err());
-    }
-
-    #[test]
     fn produces_structured_markdown_runs() {
         let runs = render_markdown("# Heading\n\n**bold** and [link](https://example.com)");
         assert!(runs.iter().any(|run| run.style == RunStyle::Heading1));
@@ -1160,5 +1195,87 @@ mod tests {
         let text = runs.iter().map(|run| run.text.as_str()).collect::<String>();
         assert!(!text.contains("script"));
         assert!(!text.contains("alert"));
+    }
+
+    #[test]
+    fn folder_names_reject_path_traversal() {
+        assert!(validate_folder_name("2026-08-17").is_ok());
+        assert!(validate_folder_name("Research Notes").is_ok());
+        assert!(validate_folder_name("../escape").is_err());
+        assert!(validate_folder_name("nested/report").is_err());
+        assert!(validate_folder_name(" ").is_err());
+    }
+
+    #[test]
+    fn folder_data_path_uses_one_todo_store() {
+        let root = PathBuf::from("/tmp/morrow-folders");
+        let path = root.join("2026-08-17").join("todos.json");
+        assert_eq!(
+            path.file_name().and_then(|value| value.to_str()),
+            Some("todos.json")
+        );
+    }
+
+    #[test]
+    fn data_file_scope_reuses_todo_operations_without_touching_default_store() {
+        let unique = format!("morrow-planner-folder-scope-{}", std::process::id());
+        let path = std::env::temp_dir().join(unique).join("todos.json");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("test directory");
+        }
+        let encoded_path = serde_json::to_string(&path.display().to_string()).unwrap();
+        let add = format!(r#"{{"command":"add","title":"Folder unit","dataFile":{encoded_path}}}"#);
+        handle_request(&add).expect("scoped add");
+        let list = format!(r#"{{"command":"list","dataFile":{encoded_path}}}"#);
+        let items = handle_request(&list).expect("scoped list");
+        let items = items.as_array().expect("list response");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["title"], "Folder unit");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn legacy_done_and_plan_are_merged_with_unique_ids() {
+        let unique = format!("morrow-planner-legacy-folder-{}", std::process::id());
+        let directory = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&directory).unwrap();
+        let make_todo = |title: &str| Todo {
+            task: Task {
+                id: 1,
+                title: String::new(),
+                content: String::new(),
+                completion_result: String::new(),
+                priority: TodoPriority::Low,
+                completed: false,
+                created_at_ms: 1,
+            },
+            archived: false,
+            subtasks: vec![Task {
+                id: 2,
+                title: title.to_owned(),
+                content: String::new(),
+                completion_result: String::new(),
+                priority: TodoPriority::Low,
+                completed: false,
+                created_at_ms: 1,
+            }],
+        };
+        fs::write(
+            directory.join("done.json"),
+            serde_json::to_vec(&vec![make_todo("Done")]).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            directory.join("plan.json"),
+            serde_json::to_vec(&vec![make_todo("Plan")]).unwrap(),
+        )
+        .unwrap();
+        let merged = merge_legacy_weekly_todos(&directory).unwrap();
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].subtasks[0].title, "Done");
+        assert_eq!(merged[1].subtasks[0].title, "Plan");
+        assert_ne!(merged[0].task.id, merged[1].task.id);
+        assert_ne!(merged[0].subtasks[0].id, merged[1].subtasks[0].id);
+        let _ = fs::remove_dir_all(directory);
     }
 }
