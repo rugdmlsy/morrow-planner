@@ -10,23 +10,23 @@ Commands:
   list [all|active|completed|archived] [--json]
                                          List compact parent/child groups
   show <selector> [--json]              Show a parent ID or child selector P##N
-  add <title>                            Add a parent with one default child; print parent ID
+  add <title>                            Add a standalone parent; print parent ID
   done <selector>                        Complete a parent or child task
   undo <selector>                        Restore a parent or child task
   archive <id>                           Archive a parent task
   unarchive <id>                         Restore an archived parent task
-  edit <selector> <title>                Rename a child or multi-child parent title
-  content <child-selector> <text>        Update child Markdown content
-  result <child-selector> <text>         Set a child completion result
-  clear-result <child-selector>          Clear a child completion result
-  priority <child-selector> <level>      Set child priority
+  edit <selector> <title>                Rename a parent or child
+  content <selector> <text>              Update parent or child Markdown content
+  result <selector> <text>               Set a parent or child completion result
+  clear-result <selector>                Clear a parent or child completion result
+  priority <selector> <level>            Set parent or child priority
   subtask-list <parent-id> [--json]      List children of a parent
   subtask-add <parent-id> <title>        Add a child and print selector P##N
   subtask-done <parent-id> <child-id>    Mark a child completed
   subtask-undo <parent-id> <child-id>    Restore a child
   subtask-edit <parent-id> <child-id> <title>
                                          Rename a child
-  subtask-delete <parent-id> <child-id>  Delete a child; one child must remain
+  subtask-delete <parent-id> <child-id>  Delete a child
   delete <selector>                      Delete a parent or child task
   move <selector> <position>             Move a parent, or a P##N child within its parent
   complete-all                           Complete every unarchived parent and child
@@ -39,7 +39,7 @@ Commands:
   help                                   Show this help
 
 Selectors:
-  P                                      Parent ID; aliases its only child for edit/content/result/priority
+  P                                      Parent ID
   P##N                                   Nth child under parent P
 
 Environment:
@@ -87,7 +87,7 @@ fn run() -> Result<(), String> {
         "archive" => update_archived(&mut store, &args, true),
         "unarchive" => update_archived(&mut store, &args, false),
         "edit" => {
-            let id = editable_task_id_argument(&store, &args, 1, true)?;
+            let id = task_id_argument(&store, &args, 1)?;
             let title = joined_argument(&args, 2, "edit requires a title")?;
             store
                 .update(id, Some(title), None, None, None, None)
@@ -95,7 +95,7 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         "content" | "note" => {
-            let id = editable_task_id_argument(&store, &args, 1, false)?;
+            let id = task_id_argument(&store, &args, 1)?;
             let content = joined_argument(&args, 2, "content requires text")?;
             store
                 .update(id, None, Some(content), None, None, None)
@@ -103,7 +103,7 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         "result" => {
-            let id = editable_task_id_argument(&store, &args, 1, false)?;
+            let id = task_id_argument(&store, &args, 1)?;
             let result = joined_argument(&args, 2, "result requires text")?;
             store
                 .update(id, None, None, Some(result), None, None)
@@ -111,14 +111,14 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         "clear-result" => {
-            let id = editable_task_id_argument(&store, &args, 1, false)?;
+            let id = task_id_argument(&store, &args, 1)?;
             store
                 .update(id, None, None, Some(String::new()), None, None)
                 .map_err(|error| error.to_string())?;
             Ok(())
         }
         "priority" => {
-            let id = editable_task_id_argument(&store, &args, 1, false)?;
+            let id = task_id_argument(&store, &args, 1)?;
             let priority = priority_argument(&args, 2)?;
             store
                 .update(id, None, None, None, Some(priority), None)
@@ -233,26 +233,8 @@ fn list(store: &TodoStore, args: &[String]) -> Result<(), String> {
 
     for visible in &todos {
         let original = store.todo(visible.id).unwrap_or(visible);
-        if original.subtasks.len() == 1 {
-            let child = &visible.subtasks[0];
-            println!(
-                "#{}\t{}\t{}\ttask\t{}",
-                visible.id,
-                if visible.archived {
-                    "archived"
-                } else if child.completed {
-                    "done"
-                } else {
-                    "todo"
-                },
-                priority_name(child.priority),
-                display_task(child)
-            );
-            continue;
-        }
-
         println!(
-            "#{}\t{}\t{}\tparent\t{}",
+            "{}\t{}\t{}\tparent\t{}",
             visible.id,
             if visible.archived {
                 "archived"
@@ -265,7 +247,7 @@ fn list(store: &TodoStore, args: &[String]) -> Result<(), String> {
         for task in &visible.subtasks {
             let index = original.child_index(task.id).unwrap_or(0);
             println!(
-                "  ##{}\t{}\t{}\t{}",
+                "  {}\t{}\t{}\t{}",
                 index,
                 if task.completed { "done" } else { "todo" },
                 priority_name(task.priority),
@@ -340,7 +322,7 @@ fn show(store: &TodoStore, args: &[String]) -> Result<(), String> {
     }
 
     if let Some(todo) = parent {
-        println!("Selector: #{}", todo.id);
+        println!("Selector: {}", todo.id);
         println!("Kind: parent");
         println!("Title: {}", display_parent_title(todo));
         println!("StoredTitle: {}", todo.title);
@@ -348,6 +330,8 @@ fn show(store: &TodoStore, args: &[String]) -> Result<(), String> {
         println!("Archived: {}", if todo.archived { "yes" } else { "no" });
         println!("Priority: {}", priority_name(todo.derived_priority()));
         println!("CreatedAtMs: {}", todo.created_at_ms);
+        println!("Content:\n{}", todo.content);
+        println!("CompletionResult:\n{}", todo.completion_result);
         println!(
             "Progress: {}/{} ({})",
             todo.completed_subtask_count(),
@@ -356,7 +340,7 @@ fn show(store: &TodoStore, args: &[String]) -> Result<(), String> {
         );
         for (index, task) in todo.subtasks.iter().enumerate() {
             println!(
-                "  ##{}\t{}\t{}\t{}",
+                "  {}\t{}\t{}\t{}",
                 index + 1,
                 if task.completed { "done" } else { "todo" },
                 priority_name(task.priority),
@@ -411,7 +395,7 @@ fn list_subtasks(store: &TodoStore, args: &[String]) -> Result<(), String> {
     } else {
         for (index, task) in todo.subtasks.iter().enumerate() {
             println!(
-                "##{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}",
                 index + 1,
                 if task.completed { "done" } else { "todo" },
                 priority_name(task.priority),
@@ -551,15 +535,7 @@ fn display_task(task: &todo_core::Task) -> String {
 }
 
 fn display_parent_title(todo: &Todo) -> String {
-    let title = todo.title.trim();
-    if !title.is_empty() {
-        title.to_owned()
-    } else {
-        todo.subtasks
-            .first()
-            .map(display_task)
-            .unwrap_or_else(|| "Untitled".to_owned())
-    }
+    display_task(&todo.task)
 }
 
 fn completion_state_name(state: TodoCompletionState) -> &'static str {
@@ -588,26 +564,6 @@ fn priority_argument(args: &[String], index: usize) -> Result<TodoPriority, Stri
         )),
         None => Err("priority requires low, medium, or high".to_owned()),
     }
-}
-
-fn editable_task_id_argument(
-    store: &TodoStore,
-    args: &[String],
-    index: usize,
-    allow_multi_parent: bool,
-) -> Result<u64, String> {
-    let id = task_id_argument(store, args, index)?;
-    if let Some(todo) = store.todo(id) {
-        if todo.subtasks.len() == 1 {
-            return Ok(todo.subtasks[0].id);
-        }
-        if !allow_multi_parent {
-            return Err(format!(
-                "parent task {id} only supports an optional title; use {id}##N for child content, result, or priority"
-            ));
-        }
-    }
-    Ok(id)
 }
 
 fn task_id_argument(store: &TodoStore, args: &[String], index: usize) -> Result<u64, String> {

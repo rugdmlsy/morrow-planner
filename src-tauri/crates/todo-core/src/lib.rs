@@ -95,6 +95,13 @@ impl DerefMut for Todo {
 
 impl Todo {
     pub fn completion_state(&self) -> TodoCompletionState {
+        if self.subtasks.is_empty() {
+            return if self.task.completed {
+                TodoCompletionState::Completed
+            } else {
+                TodoCompletionState::Active
+            };
+        }
         let completed = self.completed_subtask_count();
         if completed == 0 {
             TodoCompletionState::Active
@@ -114,20 +121,12 @@ impl Todo {
     }
 
     pub fn effective_title(&self) -> String {
-        let title = self.title.trim();
-        if !title.is_empty() {
-            return title.to_owned();
-        }
-        self.subtasks
-            .first()
-            .map(task_fallback_title)
-            .unwrap_or_else(|| "Untitled".to_owned())
+        task_fallback_title(&self.task)
     }
 
     pub fn derived_priority(&self) -> TodoPriority {
-        self.subtasks
-            .iter()
-            .map(|task| task.priority)
+        std::iter::once(self.task.priority)
+            .chain(self.subtasks.iter().map(|task| task.priority))
             .max_by_key(|priority| priority.rank())
             .unwrap_or(TodoPriority::Low)
     }
@@ -156,8 +155,9 @@ impl Todo {
     }
 
     fn sync_completed_from_subtasks(&mut self) {
-        self.task.completed =
-            !self.subtasks.is_empty() && self.subtasks.iter().all(|task| task.completed);
+        if !self.subtasks.is_empty() {
+            self.task.completed = self.subtasks.iter().all(|task| task.completed);
+        }
     }
 }
 
@@ -179,9 +179,7 @@ pub enum StoreError {
     ContentTooLong,
     CompletionResultTooLong,
     TooManySubtasks,
-    LastSubtask,
     EmptyTodo,
-    ParentTitleOnly(u64),
     InvalidOrder,
     NotFound(u64),
     NotParent(u64),
@@ -205,12 +203,7 @@ impl fmt::Display for StoreError {
             Self::TooManySubtasks => {
                 write!(f, "a task cannot contain more than {MAX_SUBTASKS} subtasks")
             }
-            Self::LastSubtask => write!(f, "a parent task must keep at least one subtask"),
             Self::EmptyTodo => write!(f, "task title and content cannot both be empty"),
-            Self::ParentTitleOnly(id) => write!(
-                f,
-                "parent task {id} only supports an optional title; edit a child task for content, completion result, or priority"
-            ),
             Self::InvalidOrder => write!(f, "task order does not match the current stored tasks"),
             Self::NotFound(id) => write!(f, "task {id} was not found"),
             Self::NotParent(id) => write!(f, "task {id} is not a parent task"),
@@ -297,7 +290,25 @@ impl TodoStore {
     }
 
     pub fn add(&mut self, title: String) -> Result<Todo, StoreError> {
-        self.add_with_initial_subtask(String::new(), title)
+        let _lock = self.lock_exclusive()?;
+        self.reload_locked()?;
+        let title = normalize_title(title)?;
+        let todo = Todo {
+            task: Task {
+                id: self.allocate_id(),
+                title,
+                content: String::new(),
+                completion_result: String::new(),
+                priority: TodoPriority::Low,
+                completed: false,
+                created_at_ms: now_ms(),
+            },
+            archived: false,
+            subtasks: Vec::new(),
+        };
+        self.todos.push(todo.clone());
+        self.persist()?;
+        Ok(todo)
     }
 
     pub fn add_with_initial_subtask(
@@ -357,15 +368,15 @@ impl TodoStore {
 
         for todo in &mut self.todos {
             if todo.id == id {
-                if content.is_some() || completion_result.is_some() || priority.is_some() {
-                    return Err(StoreError::ParentTitleOnly(id));
-                }
-                if let Some(title) = title {
-                    todo.task.title = title;
-                }
-                todo.task.content.clear();
-                todo.task.completion_result.clear();
-                todo.task.priority = TodoPriority::Low;
+                let allow_empty = !todo.subtasks.is_empty();
+                apply_task_update(
+                    &mut todo.task,
+                    title,
+                    content,
+                    completion_result,
+                    priority,
+                    allow_empty,
+                )?;
                 if let Some(completed) = completed {
                     todo.set_completed(completed);
                 }
@@ -380,7 +391,7 @@ impl TodoStore {
 
             let parent_id = todo.id;
             if let Some(task) = todo.subtasks.iter_mut().find(|task| task.id == id) {
-                apply_task_update(task, title, content, completion_result, priority)?;
+                apply_task_update(task, title, content, completion_result, priority, false)?;
                 if let Some(completed) = completed {
                     task.completed = completed;
                 }
@@ -445,9 +456,6 @@ impl TodoStore {
 
         for todo in &mut self.todos {
             if let Some(index) = todo.subtasks.iter().position(|task| task.id == id) {
-                if todo.subtasks.len() == 1 {
-                    return Err(StoreError::LastSubtask);
-                }
                 let task = todo.subtasks.remove(index);
                 let parent_id = todo.id;
                 todo.sync_completed_from_subtasks();
@@ -699,6 +707,7 @@ fn apply_task_update(
     content: Option<String>,
     completion_result: Option<String>,
     priority: Option<TodoPriority>,
+    allow_empty: bool,
 ) -> Result<(), StoreError> {
     if let Some(title) = title {
         task.title = title;
@@ -712,7 +721,7 @@ fn apply_task_update(
     if let Some(priority) = priority {
         task.priority = priority;
     }
-    if task.title.is_empty() && task.content.is_empty() {
+    if !allow_empty && task.title.is_empty() && task.content.is_empty() {
         return Err(StoreError::EmptyTodo);
     }
     Ok(())
@@ -734,12 +743,8 @@ fn needs_migration(todos: &[Todo]) -> bool {
     for todo in todos {
         if todo.id == 0
             || todo.created_at_ms <= 0
-            || todo.subtasks.is_empty()
             || !ids.insert(todo.id)
-            || !todo.content.is_empty()
-            || !todo.completion_result.is_empty()
-            || todo.priority != TodoPriority::Low
-            || should_clear_single_child_parent_title(todo)
+            || should_promote_single_child_to_parent(todo)
         {
             return true;
         }
@@ -748,7 +753,9 @@ fn needs_migration(todos: &[Todo]) -> bool {
                 return true;
             }
         }
-        if todo.completed != todo.subtasks.iter().all(|task| task.completed) {
+        if !todo.subtasks.is_empty()
+            && todo.completed != todo.subtasks.iter().all(|task| task.completed)
+        {
             return true;
         }
     }
@@ -796,23 +803,8 @@ fn migrate_todos(path: &Path, todos: &mut [Todo]) -> Result<(), StoreError> {
         if todo.created_at_ms <= 0 {
             todo.created_at_ms = fallback;
         }
-        if todo.subtasks.is_empty() {
-            let child_id = next;
-            next += 1;
-            used.insert(child_id);
-            todo.subtasks.push(Task {
-                id: child_id,
-                title: if todo.title.is_empty() {
-                    "New Task".to_owned()
-                } else {
-                    todo.title.clone()
-                },
-                content: todo.content.clone(),
-                completion_result: todo.completion_result.clone(),
-                priority: todo.priority,
-                completed: todo.completed,
-                created_at_ms: todo.created_at_ms,
-            });
+        if should_promote_single_child_to_parent(todo) {
+            promote_single_child_to_parent(todo);
         }
         let parent_created_at_ms = todo.created_at_ms;
         for task in &mut todo.subtasks {
@@ -825,52 +817,31 @@ fn migrate_todos(path: &Path, todos: &mut [Todo]) -> Result<(), StoreError> {
                 task.created_at_ms = parent_created_at_ms;
             }
         }
-        normalize_parent_payload(todo);
         todo.sync_completed_from_subtasks();
     }
     persist_todos(path, todos)
 }
-fn should_clear_single_child_parent_title(todo: &Todo) -> bool {
+fn should_promote_single_child_to_parent(todo: &Todo) -> bool {
     if todo.subtasks.len() != 1 {
         return false;
     }
     let parent = todo.title.trim();
     let child = todo.subtasks[0].title.trim();
-    !parent.is_empty()
-        && (parent == child || matches!(parent, "New Project" | "新事项" | "New Task" | "新任务"))
+    todo.content.trim().is_empty()
+        && todo.completion_result.trim().is_empty()
+        && todo.priority == TodoPriority::Low
+        && (parent.is_empty()
+            || parent == child
+            || matches!(parent, "New Project" | "新事项" | "New Task" | "新任务"))
 }
 
-fn normalize_parent_payload(todo: &mut Todo) {
-    let parent_content = std::mem::take(&mut todo.task.content);
-    let parent_result = std::mem::take(&mut todo.task.completion_result);
-    let parent_priority = std::mem::take(&mut todo.task.priority);
-    if let Some(first) = todo.subtasks.first_mut() {
-        merge_unique_text(&mut first.content, parent_content);
-        merge_unique_text(&mut first.completion_result, parent_result);
-        if parent_priority.rank() > first.priority.rank() {
-            first.priority = parent_priority;
-        }
-    }
-    if should_clear_single_child_parent_title(todo) {
-        todo.task.title.clear();
-    }
-    todo.task.priority = TodoPriority::Low;
-}
-
-fn merge_unique_text(target: &mut String, source: String) {
-    let source = source.trim();
-    if source.is_empty() {
-        return;
-    }
-    let target_trimmed = target.trim();
-    if target_trimmed.is_empty() {
-        *target = source.to_owned();
-    } else if target_trimmed != source
-        && !target_trimmed.contains(source)
-        && !source.contains(target_trimmed)
-    {
-        *target = format!("{source}\n\n{target_trimmed}");
-    }
+fn promote_single_child_to_parent(todo: &mut Todo) {
+    let parent_id = todo.task.id;
+    let parent_created_at_ms = todo.task.created_at_ms;
+    let mut child = todo.subtasks.remove(0);
+    child.id = parent_id;
+    child.created_at_ms = parent_created_at_ms;
+    todo.task = child;
 }
 
 fn task_fallback_title(task: &Task) -> String {
@@ -1037,82 +1008,44 @@ mod tests {
     }
 
     #[test]
-    fn add_creates_an_untitled_parent_backed_by_one_child() {
-        let path = test_path("untitled-parent");
+    fn add_creates_a_standalone_parent() {
+        let path = test_path("standalone-parent");
         let mut store = TodoStore::load(path.clone()).expect("store should load");
         let todo = store
             .add("First task".to_owned())
             .expect("todo should be added");
-        assert!(todo.title.is_empty());
+        assert_eq!(todo.title, "First task");
         assert!(todo.content.is_empty());
         assert!(todo.completion_result.is_empty());
         assert_eq!(todo.priority, TodoPriority::Low);
-        assert_eq!(todo.subtasks.len(), 1);
-        assert_eq!(todo.subtasks[0].title, "First task");
+        assert!(todo.subtasks.is_empty());
         assert_eq!(todo.effective_title(), "First task");
-        assert_eq!(todo.child_index(todo.subtasks[0].id), Some(1));
-        assert_eq!(
-            todo.child_by_index(1).map(|task| task.id),
-            Some(todo.subtasks[0].id)
-        );
         fs::remove_file(path).expect("test data should be removable");
     }
 
     #[test]
-    fn parent_supports_only_an_optional_title() {
-        let path = test_path("parent-title-only");
+    fn parent_supports_full_task_fields() {
+        let path = test_path("parent-fields");
         let mut store = TodoStore::load(path.clone()).expect("store should load");
         let todo = store
             .add("First task".to_owned())
             .expect("todo should be added");
-        store
-            .update(todo.id, Some("Release".to_owned()), None, None, None, None)
-            .expect("parent title should update");
-        assert_eq!(
-            store.todo(todo.id).expect("parent should exist").title,
-            "Release"
-        );
-        store
-            .update(todo.id, Some(String::new()), None, None, None, None)
-            .expect("parent title should clear");
-        assert!(store
-            .todo(todo.id)
-            .expect("parent should exist")
-            .title
-            .is_empty());
-        assert!(matches!(
-            store.update(
+        let record = store
+            .update(
                 todo.id,
-                None,
-                Some("parent body".to_owned()),
-                None,
-                None,
-                None,
-            ),
-            Err(StoreError::ParentTitleOnly(id)) if id == todo.id
-        ));
-        assert!(matches!(
-            store.update(
-                todo.id,
-                None,
-                None,
-                Some("parent result".to_owned()),
-                None,
-                None,
-            ),
-            Err(StoreError::ParentTitleOnly(id)) if id == todo.id
-        ));
-        assert!(matches!(
-            store.update(
-                todo.id,
-                None,
-                None,
-                None,
+                Some(String::new()),
+                Some("# Release\n\nParent body".to_owned()),
+                Some("Parent result".to_owned()),
                 Some(TodoPriority::High),
                 None,
-            ),
-            Err(StoreError::ParentTitleOnly(id)) if id == todo.id
-        ));
+            )
+            .expect("parent fields should update");
+        assert_eq!(record.kind, TaskKind::Parent);
+        assert!(record.task.title.is_empty());
+        assert_eq!(record.task.content, "# Release\n\nParent body");
+        assert_eq!(record.task.completion_result, "Parent result");
+        assert_eq!(record.task.priority, TodoPriority::High);
+        assert_eq!(store.todo(todo.id).unwrap().effective_title(), "# Release");
         fs::remove_file(path).expect("test data should be removable");
     }
 
@@ -1121,7 +1054,7 @@ mod tests {
         let path = test_path("subtask-fields");
         let mut store = TodoStore::load(path.clone()).expect("store should load");
         let todo = store
-            .add("Project".to_owned())
+            .add_with_initial_subtask("Project".to_owned(), "First step".to_owned())
             .expect("todo should be added");
         let child_id = todo.subtasks[0].id;
         let record = store
@@ -1152,7 +1085,7 @@ mod tests {
         let path = test_path("derived-state");
         let mut store = TodoStore::load(path.clone()).expect("store should load");
         let todo = store
-            .add("Project".to_owned())
+            .add_with_initial_subtask("Project".to_owned(), "First".to_owned())
             .expect("todo should be added");
         let first = todo.subtasks[0].id;
         let second = store
@@ -1200,15 +1133,17 @@ mod tests {
         let second = store
             .add("Second".to_owned())
             .expect("todo should be added");
-        let added = store
+        let first_child = store
             .add_subtask(first.id, "Extra".to_owned())
+            .expect("subtask should be added");
+        let second_child = store
+            .add_subtask(second.id, "Extra second".to_owned())
             .expect("subtask should be added");
         let ids = [
             first.id,
-            first.subtasks[0].id,
             second.id,
-            second.subtasks[0].id,
-            added.task.id,
+            first_child.task.id,
+            second_child.task.id,
         ];
         assert_eq!(ids.iter().copied().collect::<HashSet<_>>().len(), ids.len());
         for id in ids {
@@ -1218,30 +1153,22 @@ mod tests {
     }
 
     #[test]
-    fn deleting_last_subtask_is_rejected() {
+    fn deleting_last_subtask_leaves_parent_intact() {
         let path = test_path("last-subtask");
         let mut store = TodoStore::load(path.clone()).expect("store should load");
         let todo = store
             .add("Project".to_owned())
             .expect("todo should be added");
-        assert!(matches!(
-            store.delete_task(todo.subtasks[0].id),
-            Err(StoreError::LastSubtask)
-        ));
-        let added = store
-            .add_subtask(todo.id, "Second".to_owned())
-            .expect("subtask should be added");
+        let child = store
+            .add_subtask(todo.id, "First child".to_owned())
+            .expect("subtask should be added")
+            .task;
         store
-            .delete_task(added.task.id)
-            .expect("extra subtask should delete");
-        assert_eq!(
-            store
-                .todo(todo.id)
-                .expect("parent should exist")
-                .subtasks
-                .len(),
-            1
-        );
+            .delete_task(child.id)
+            .expect("only subtask should delete");
+        let parent = store.todo(todo.id).expect("parent should remain");
+        assert!(parent.subtasks.is_empty());
+        assert_eq!(parent.title, "Project");
         fs::remove_file(path).expect("test data should be removable");
     }
 
@@ -1249,9 +1176,11 @@ mod tests {
     fn bulk_completion_and_completed_queries_use_children() {
         let path = test_path("bulk");
         let mut store = TodoStore::load(path.clone()).expect("store should load");
-        let first = store.add("First".to_owned()).expect("todo should be added");
+        let first = store
+            .add_with_initial_subtask("First".to_owned(), "First child".to_owned())
+            .expect("todo should be added");
         let second = store
-            .add("Second".to_owned())
+            .add_with_initial_subtask("Second".to_owned(), "Second child".to_owned())
             .expect("todo should be added");
         store
             .update(first.subtasks[0].id, None, None, None, None, Some(true))
@@ -1295,9 +1224,9 @@ mod tests {
         )
         .expect("legacy data should be written");
         let store = TodoStore::load(path.clone()).expect("legacy data should migrate");
-        assert_eq!(store.list()[0].subtasks.len(), 1);
-        assert!(store.list()[0].subtasks[0].completed);
-        assert!(store.list()[0].subtasks[0].created_at_ms > 0);
+        assert!(store.list()[0].subtasks.is_empty());
+        assert!(store.list()[0].completed);
+        assert!(store.list()[0].created_at_ms > 0);
         let ids = store
             .list()
             .iter()
@@ -1305,7 +1234,7 @@ mod tests {
                 std::iter::once(todo.id).chain(todo.subtasks.iter().map(|task| task.id))
             })
             .collect::<HashSet<_>>();
-        assert_eq!(ids.len(), 4);
+        assert_eq!(ids.len(), 3);
         let persisted = fs::read_to_string(&path).expect("migrated data should be readable");
         assert!(persisted.contains("completionResult"));
         fs::remove_file(path).expect("test data should be removable");
@@ -1325,13 +1254,13 @@ mod tests {
             .add("New parent".to_owned())
             .expect("mutation should migrate");
         assert_eq!(store.list().len(), 2);
-        assert_eq!(store.list()[0].subtasks.len(), 1);
-        assert_ne!(store.list()[0].subtasks[0].id, added.id);
+        assert!(store.list()[0].subtasks.is_empty());
+        assert_ne!(store.list()[0].id, added.id);
         fs::remove_file(path).expect("test data should be removable");
     }
 
     #[test]
-    fn migration_moves_parent_payload_into_first_child() {
+    fn migration_preserves_independent_parent_payload() {
         let path = test_path("parent-payload-migration");
         fs::write(
             &path,
@@ -1341,27 +1270,17 @@ mod tests {
         let store = TodoStore::load(path.clone()).expect("legacy hierarchy should migrate");
         let todo = &store.list()[0];
         assert_eq!(todo.title, "Project");
-        assert!(todo.content.is_empty());
-        assert!(todo.completion_result.is_empty());
-        assert_eq!(todo.priority, TodoPriority::Low);
-        assert_eq!(
-            todo.subtasks[0].content,
-            "Parent notes
-
-Child notes"
-        );
-        assert_eq!(
-            todo.subtasks[0].completion_result,
-            "Parent result
-
-Child result"
-        );
-        assert_eq!(todo.subtasks[0].priority, TodoPriority::High);
+        assert_eq!(todo.content, "Parent notes");
+        assert_eq!(todo.completion_result, "Parent result");
+        assert_eq!(todo.priority, TodoPriority::High);
+        assert_eq!(todo.subtasks[0].content, "Child notes");
+        assert_eq!(todo.subtasks[0].completion_result, "Child result");
+        assert_eq!(todo.subtasks[0].priority, TodoPriority::Low);
         fs::remove_file(path).expect("test data should be removable");
     }
 
     #[test]
-    fn migration_clears_redundant_single_child_parent_title() {
+    fn migration_promotes_redundant_single_child_into_parent() {
         let path = test_path("redundant-parent-title");
         fs::write(
             &path,
@@ -1370,7 +1289,9 @@ Child result"
         .expect("legacy hierarchy should be written");
         let store = TodoStore::load(path.clone()).expect("legacy hierarchy should migrate");
         let todo = &store.list()[0];
-        assert!(todo.title.is_empty());
+        assert_eq!(todo.title, "Same task");
+        assert_eq!(todo.content, "Body");
+        assert!(todo.subtasks.is_empty());
         assert_eq!(todo.effective_title(), "Same task");
         fs::remove_file(path).expect("test data should be removable");
     }
@@ -1380,7 +1301,7 @@ Child result"
         let path = test_path("task-fields");
         let mut store = TodoStore::load(path.clone()).expect("store should load");
         let todo = store
-            .add("Project".to_owned())
+            .add_with_initial_subtask("Project".to_owned(), "Child".to_owned())
             .expect("todo should be added");
         let child_id = todo.subtasks[0].id;
         let created_at_ms = todo.subtasks[0].created_at_ms;
@@ -1413,6 +1334,11 @@ Child result"
         let second = store
             .add("Second".to_owned())
             .expect("todo should be added");
+        let second_child = store
+            .add_subtask(second.id, "Second child".to_owned())
+            .expect("child should be added")
+            .task
+            .id;
         store
             .set_archived_for_ids(&[first.id], true)
             .expect("first parent should archive");
@@ -1424,12 +1350,12 @@ Child result"
             .expect("second parent should archive");
         assert_eq!(store.clear_archived().expect("archive should clear"), 1);
         assert!(store.todo(second.id).is_none());
-        assert!(store.task(second.subtasks[0].id).is_none());
+        assert!(store.task(second_child).is_none());
         fs::remove_file(path).expect("test data should be removable");
     }
 
     #[test]
-    fn clear_completed_uses_derived_parent_completion() {
+    fn clear_completed_handles_standalone_parent_completion() {
         let path = test_path("clear-completed");
         let mut store = TodoStore::load(path.clone()).expect("store should load");
         let completed = store
@@ -1439,8 +1365,8 @@ Child result"
             .add("Active".to_owned())
             .expect("todo should be added");
         store
-            .update(completed.subtasks[0].id, None, None, None, None, Some(true))
-            .expect("child should complete");
+            .update(completed.id, None, None, None, None, Some(true))
+            .expect("parent should complete");
         assert_eq!(store.clear_completed().expect("completed should clear"), 1);
         assert!(store.todo(completed.id).is_none());
         assert!(store.todo(active.id).is_some());
@@ -1462,7 +1388,7 @@ Child result"
             store.list().iter().map(|todo| todo.id).collect::<Vec<_>>(),
             vec![third.id, first.id, second.id]
         );
-        assert_eq!(store.list()[1].subtasks[0].title, "First");
+        assert_eq!(store.list()[1].title, "First");
         fs::remove_file(path).expect("test data should be removable");
     }
 
@@ -1471,7 +1397,11 @@ Child result"
         let path = test_path("reorder-subtasks");
         let mut store = TodoStore::load(path.clone()).expect("store should load");
         let parent = store.add("One".to_owned()).expect("parent should add");
-        let first = parent.subtasks[0].id;
+        let first = store
+            .add_subtask(parent.id, "First".to_owned())
+            .expect("first should add")
+            .task
+            .id;
         let second = store
             .add_subtask(parent.id, "Two".to_owned())
             .expect("second should add")
@@ -1491,7 +1421,7 @@ Child result"
         assert_eq!(todo.child_index(first), Some(2));
         assert_eq!(todo.child_index(second), Some(3));
         assert_eq!(todo.subtasks[0].title, "Three");
-        assert_eq!(todo.effective_title(), "Three");
+        assert_eq!(todo.effective_title(), "One");
         fs::remove_file(path).expect("test data should be removable");
     }
 
@@ -1517,12 +1447,16 @@ Child result"
         let path = test_path("append-child");
         let mut store = TodoStore::load(path.clone()).expect("store should load");
         let parent = store.add("First".to_owned()).expect("parent should add");
+        let first = store
+            .add_subtask(parent.id, "First child".to_owned())
+            .expect("first should add")
+            .task
+            .id;
         let second = store
             .add_subtask(parent.id, "Second".to_owned())
             .expect("second should add")
             .task
             .id;
-        let first = parent.subtasks[0].id;
         store
             .reorder_subtasks(parent.id, &[second, first])
             .expect("children should reorder");

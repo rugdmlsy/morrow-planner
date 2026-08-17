@@ -19,7 +19,7 @@ The default data file is:
 
 Set `TODO_DATA_FILE` to use another file.
 
-Legacy data is migrated on load. Parent-only records receive one child containing the original document. Existing parent content and completion results move into the first child, and a higher parent priority is transferred to that child. Redundant single-child parent titles and generated placeholders are cleared. Missing child fields receive defaults, and duplicate child IDs are reassigned so internal IDs remain globally unique.
+Legacy data is migrated on load. Existing standalone parent records remain standalone. Records created by the earlier compact one-child model are promoted back into the parent when the parent had no independent payload and merely mirrored its only child. Parent content, completion results, and priority are otherwise preserved independently. Missing child fields receive defaults, and duplicate child IDs are reassigned so internal IDs remain globally unique.
 
 Migration uses the same exclusive file lock as normal writes.
 
@@ -65,7 +65,7 @@ cargo build --release --manifest-path src-tauri/Cargo.toml -p todoctl
 
 The binary is written to `src-tauri/target/release/todoctl`.
 
-Create a compact one-child project:
+Create a parent task:
 
 ```bash
 PARENT_ID=$(todoctl add "Write the first draft")
@@ -75,10 +75,10 @@ todoctl list
 The list contains one row such as:
 
 ```text
-#1  todo  low  task  Write the first draft
+1  todo  low  parent  Write the first draft
 ```
 
-While the project has one child, its parent ID aliases that child for document-level commands:
+The parent is a full task. Its title, Markdown body, completion result, and priority can all be edited directly:
 
 ```bash
 todoctl content "$PARENT_ID" "# Write the first draft\n\nDraft the introduction."
@@ -87,25 +87,19 @@ todoctl priority "$PARENT_ID" high
 todoctl edit "$PARENT_ID" "Write the revised draft"
 ```
 
-Add another child. `subtask-add` prints a selector local to the parent:
+Add child tasks explicitly. `subtask-add` prints a selector local to the parent:
 
 ```bash
+FIRST=$(todoctl subtask-add "$PARENT_ID" "Prepare the document")
 SECOND=$(todoctl subtask-add "$PARENT_ID" "Run the review")
-# SECOND is 1##2
+# FIRST is 1##1 and SECOND is 1##2
 
-todoctl content "$PARENT_ID##1" "# Draft\n\nPrepare the document."
+todoctl content "$FIRST" "# Draft\n\nPrepare the document."
 todoctl content "$SECOND" "# Review\n\nCheck the final document."
 todoctl done "$SECOND"
 ```
 
-Once a project has multiple children, the parent ID addresses only its optional group title:
-
-```bash
-todoctl edit "$PARENT_ID" "Publication"
-todoctl edit "$PARENT_ID" ""  # return to the first-child title fallback
-```
-
-Use `P##N` for child content, completion result, and priority:
+Use `P##N` for a child while the plain parent ID always refers to the parent itself:
 
 ```bash
 todoctl show "$PARENT_ID##1"

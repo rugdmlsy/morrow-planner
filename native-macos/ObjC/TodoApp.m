@@ -405,8 +405,8 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
     if ((self = [super initWithFrame:frame])) {
         _check = [[CheckControl alloc] initWithFrame:NSZeroRect];
         _idLabel = [NSTextField labelWithString:@""];
-        _idLabel.font = [NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium];
-        _idLabel.textColor = NSColor.tertiaryLabelColor;
+        _idLabel.font = [NSFont monospacedDigitSystemFontOfSize:11.5 weight:NSFontWeightSemibold];
+        _idLabel.textColor = NSColor.secondaryLabelColor;
         _idLabel.lineBreakMode = NSLineBreakByClipping;
         _titleLabel = [NSTextField labelWithString:@""];
         _titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -472,9 +472,9 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
     NSNumber *taskID = [summary[@"id"] isKindOfClass:NSNumber.class] ? summary[@"id"] : nil;
     NSNumber *childIndex = [summary[@"childIndex"] isKindOfClass:NSNumber.class] ? summary[@"childIndex"] : nil;
     if (self.childRow) {
-        self.idLabel.stringValue = childIndex ? [NSString stringWithFormat:@"##%@", childIndex] : @"##?";
+        self.idLabel.stringValue = childIndex ? childIndex.stringValue : @"?";
     } else {
-        self.idLabel.stringValue = taskID ? [NSString stringWithFormat:@"#%@", taskID] : @"#?";
+        self.idLabel.stringValue = taskID ? taskID.stringValue : @"?";
     }
 
     self.titleLabel.stringValue = [summary[@"title"] isKindOfClass:NSString.class] ? summary[@"title"] : @"";
@@ -533,7 +533,7 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
     self.addButton.toolTip = english ? @"Add child task" : @"添加子任务";
     self.addButton.accessibilityLabel = self.addButton.toolTip;
 
-    self.idLabel.textColor = NSColor.tertiaryLabelColor;
+    self.idLabel.textColor = completed ? NSColor.tertiaryLabelColor : NSColor.secondaryLabelColor;
     self.titleLabel.textColor = completed ? NSColor.tertiaryLabelColor : NSColor.labelColor;
     self.subtitleLabel.textColor = completed ? NSColor.tertiaryLabelColor : NSColor.secondaryLabelColor;
     if (completed) self.priorityLabel.textColor = NSColor.tertiaryLabelColor;
@@ -1703,7 +1703,7 @@ toPasteboard:(NSPasteboard *)pasteboard {
     for (NSDictionary *parent in self.summaries) {
         NSNumber *parentID = [parent[@"id"] isKindOfClass:NSNumber.class] ? parent[@"id"] : nil;
         NSInteger childCount = [parent[@"subtaskCount"] integerValue];
-        if (parentID && childCount > 1) [valid addObject:parentID];
+        if (parentID && childCount > 0) [valid addObject:parentID];
     }
     NSMutableSet<NSNumber *> *pruned = [self.collapsedParentIDs mutableCopy];
     [pruned intersectSet:valid];
@@ -2213,7 +2213,7 @@ toPasteboard:(NSPasteboard *)pasteboard {
     for (NSDictionary *group in groups) {
         NSDictionary *parent = group[@"parent"];
         NSArray *allChildren = [parent[@"subtasks"] isKindOfClass:NSArray.class] ? parent[@"subtasks"] : @[];
-        BOOL hasCollapsibleChildren = allChildren.count > 1;
+        BOOL hasCollapsibleChildren = allChildren.count > 0;
         NSNumber *parentID = [parent[@"id"] isKindOfClass:NSNumber.class] ? parent[@"id"] : nil;
         BOOL childrenCollapsed = hasCollapsibleChildren && parentID && [self.collapsedParentIDs containsObject:parentID];
         NSMutableDictionary *displayParent = [parent mutableCopy];
@@ -2242,6 +2242,7 @@ toPasteboard:(NSPasteboard *)pasteboard {
         currentParents++;
         currentTasks += taskCount;
         if (![parent[@"completed"] boolValue]) allParentsCompleted = NO;
+        if (children.count == 0 && ![parent[@"completed"] boolValue]) activeTasks++;
         for (NSDictionary *child in children) {
             if (![child[@"completed"] boolValue]) activeTasks++;
         }
@@ -2570,16 +2571,14 @@ toPasteboard:(NSPasteboard *)pasteboard {
     NSError *error = nil;
     NSDictionary *summary = BridgeCall(@{
         @"command": @"add",
-        @"title": @"",
-        @"initialSubtaskTitle": TodoLocalized(self.language, @"新任务", @"New Task"),
+        @"title": TodoLocalized(self.language, @"新任务", @"New Task"),
     }, &error);
     if (!summary) {
         [self showError:error];
         return;
     }
     [self reloadSummaries];
-    NSArray<NSDictionary *> *children = [summary[@"subtasks"] isKindOfClass:NSArray.class] ? summary[@"subtasks"] : @[];
-    NSNumber *taskID = children.firstObject[@"id"] ?: summary[@"id"];
+    NSNumber *taskID = summary[@"id"];
     [self selectID:taskID];
     if (self.viewMode != TodoViewModePreview) {
         [self.detail.editor setSelectedRange:NSMakeRange(0, self.detail.editor.string.length)];
