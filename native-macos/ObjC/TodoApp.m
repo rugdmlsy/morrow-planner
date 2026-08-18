@@ -441,7 +441,7 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
     CGFloat rightInset = 6;
     CGFloat disclosureWidth = self.collapseButton.hidden ? 0 : 30;
     CGFloat addWidth = self.addButton.hidden ? 0 : 28;
-    CGFloat priorityWidth = 28;
+    CGFloat priorityWidth = 36;
     CGFloat rightX = NSWidth(self.bounds) - rightInset;
     if (!self.collapseButton.hidden) {
         self.collapseButton.frame = NSMakeRect(rightX - disclosureWidth, (height - 32) / 2, disclosureWidth, 32);
@@ -494,16 +494,22 @@ typedef NS_ENUM(NSInteger, TodoCheckState) {
         self.subtitleLabel.stringValue = subtitle;
     }
 
-    NSString *priority = [summary[@"priority"] isKindOfClass:NSString.class] ? summary[@"priority"] : @"low";
-    if ([priority isEqualToString:@"high"]) {
-        self.priorityLabel.stringValue = english ? @"H" : @"高";
+    NSString *priority = [summary[@"priority"] isKindOfClass:NSString.class] ? summary[@"priority"] : @"default";
+    if ([priority isEqualToString:@"highest"]) {
+        self.priorityLabel.stringValue = english ? @"VH" : @"最高";
         self.priorityLabel.textColor = NSColor.systemRedColor;
-    } else if ([priority isEqualToString:@"medium"]) {
-        self.priorityLabel.stringValue = english ? @"M" : @"中";
+    } else if ([priority isEqualToString:@"high"]) {
+        self.priorityLabel.stringValue = english ? @"H" : @"高";
         self.priorityLabel.textColor = NSColor.systemOrangeColor;
-    } else {
-        self.priorityLabel.stringValue = english ? @"L" : @"低";
+    } else if ([priority isEqualToString:@"lowest"]) {
+        self.priorityLabel.stringValue = english ? @"VL" : @"最低";
         self.priorityLabel.textColor = NSColor.tertiaryLabelColor;
+    } else if ([priority isEqualToString:@"low"]) {
+        self.priorityLabel.stringValue = english ? @"L" : @"低";
+        self.priorityLabel.textColor = NSColor.secondaryLabelColor;
+    } else {
+        self.priorityLabel.stringValue = english ? @"N" : @"默认";
+        self.priorityLabel.textColor = NSColor.labelColor;
     }
 
     NSString *completionState = [summary[@"completionState"] isKindOfClass:NSString.class]
@@ -561,9 +567,11 @@ typedef NS_ENUM(NSInteger, TodoViewMode) {
 };
 
 typedef NS_ENUM(NSInteger, TodoPriority) {
-    TodoPriorityLow = 0,
-    TodoPriorityMedium = 1,
-    TodoPriorityHigh = 2,
+    TodoPriorityLowest = 0,
+    TodoPriorityLow = 1,
+    TodoPriorityDefault = 2,
+    TodoPriorityHigh = 3,
+    TodoPriorityHighest = 4,
 };
 
 typedef NS_ENUM(NSInteger, TodoSortMode) {
@@ -585,17 +593,22 @@ static NSString *TodoLocalized(TodoLanguage language, NSString *chinese, NSStrin
 
 static TodoPriority TodoPriorityFromValue(id value) {
     if ([value isKindOfClass:NSString.class]) {
+        if ([value isEqualToString:@"highest"]) return TodoPriorityHighest;
         if ([value isEqualToString:@"high"]) return TodoPriorityHigh;
-        if ([value isEqualToString:@"medium"]) return TodoPriorityMedium;
+        if ([value isEqualToString:@"low"]) return TodoPriorityLow;
+        if ([value isEqualToString:@"lowest"]) return TodoPriorityLowest;
+        if ([value isEqualToString:@"default"] || [value isEqualToString:@"medium"]) return TodoPriorityDefault;
     }
-    return TodoPriorityLow;
+    return TodoPriorityDefault;
 }
 
 static NSString *TodoPriorityValue(TodoPriority priority) {
     switch (priority) {
+        case TodoPriorityHighest: return @"highest";
         case TodoPriorityHigh: return @"high";
-        case TodoPriorityMedium: return @"medium";
-        default: return @"low";
+        case TodoPriorityLow: return @"low";
+        case TodoPriorityLowest: return @"lowest";
+        default: return @"default";
     }
 }
 
@@ -730,7 +743,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
         _priorityLabel = [NSTextField labelWithString:@"优先级"];
         _priorityLabel.font = [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
         _priorityLabel.textColor = NSColor.secondaryLabelColor;
-        _priorityControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"低", @"中", @"高"]];
+        _priorityControl = [[LiteSegmentedControl alloc] initWithLabels:@[@"最低", @"低", @"默认", @"高", @"最高"]];
         _closeButton = [[LiteButton alloc] initWithTitle:@"关闭" style:LiteButtonStylePlain];
 
 
@@ -1283,9 +1296,9 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 }
 - (void)changeCurrentPriority:(TodoPriority)priority {
     if ([self.currentTodo[@"titleOnly"] boolValue]) return;
-    TodoPriority normalizedPriority = (TodoPriority)MAX(TodoPriorityLow, MIN(priority, TodoPriorityHigh));
+    TodoPriority normalizedPriority = (TodoPriority)MAX(TodoPriorityLowest, MIN(priority, TodoPriorityHighest));
     if (!self.currentTodo || !self.selectedID) {
-        self.detail.priorityControl.selectedIndex = TodoPriorityLow;
+        self.detail.priorityControl.selectedIndex = TodoPriorityDefault;
         return;
     }
 
@@ -1394,7 +1407,7 @@ static void SizeTextViewToScrollView(NSTextView *textView, NSScrollView *scrollV
 
     self.detail.priorityLabel.stringValue = TodoLocalized(self.language, @"优先级", @"Priority");
     self.detail.priorityControl.accessibilityLabel = TodoLocalized(self.language, @"任务优先级", @"Task priority");
-    self.detail.priorityControl.labels = english ? @[@"Low", @"Medium", @"High"] : @[@"低", @"中", @"高"];
+    self.detail.priorityControl.labels = english ? @[@"Lowest", @"Low", @"Default", @"High", @"Highest"] : @[@"最低", @"低", @"默认", @"高", @"最高"];
     self.detail.modeControl.labels = english ? @[@"Edit", @"Split", @"Preview"] : @[@"编辑", @"分栏", @"预览"];
     self.detail.modeControl.selectedIndex = self.viewMode;
     self.detail.closeButton.title = TodoLocalized(self.language, @"关闭", @"Close");
@@ -2482,7 +2495,7 @@ toPasteboard:(NSPasteboard *)pasteboard {
     self.suppressTextChanges = YES;
     self.detail.editor.string = @"";
     self.detail.completionResultEditor.string = @"";
-    self.detail.priorityControl.selectedIndex = TodoPriorityLow;
+    self.detail.priorityControl.selectedIndex = TodoPriorityDefault;
     self.suppressTextChanges = NO;
     self.editorSnapshot = @"";
     self.completionResultSnapshot = @"";

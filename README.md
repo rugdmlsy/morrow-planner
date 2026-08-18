@@ -75,7 +75,7 @@ todoctl list
 The list contains one row such as:
 
 ```text
-1  todo  low  parent  Write the first draft
+1  todo  default  parent  Write the first draft
 ```
 
 The parent is a full task. Its title, Markdown body, completion result, and priority can all be edited directly:
@@ -86,6 +86,8 @@ todoctl result "$PARENT_ID" "Draft reviewed"
 todoctl priority "$PARENT_ID" high
 todoctl edit "$PARENT_ID" "Write the revised draft"
 ```
+
+Priority has five levels: `lowest`, `low`, `default`, `high`, and `highest`. New parent and child tasks start at `default`; the legacy CLI value `medium` is still accepted as an alias for `default`.
 
 Add child tasks explicitly. `subtask-add` prints a selector local to the parent:
 
@@ -104,7 +106,7 @@ Use `P##N` for a child while the plain parent ID always refers to the parent its
 ```bash
 todoctl show "$PARENT_ID##1"
 todoctl result "$PARENT_ID##1" "Artifact verified"
-todoctl priority "$PARENT_ID##2" medium
+todoctl priority "$PARENT_ID##2" highest
 todoctl undo "$PARENT_ID##2"
 todoctl delete "$PARENT_ID##2"
 ```

@@ -548,21 +548,25 @@ fn completion_state_name(state: TodoCompletionState) -> &'static str {
 
 fn priority_name(priority: TodoPriority) -> &'static str {
     match priority {
+        TodoPriority::Lowest => "lowest",
         TodoPriority::Low => "low",
-        TodoPriority::Medium => "medium",
+        TodoPriority::Default => "default",
         TodoPriority::High => "high",
+        TodoPriority::Highest => "highest",
     }
 }
 
 fn priority_argument(args: &[String], index: usize) -> Result<TodoPriority, String> {
     match args.get(index).map(String::as_str) {
+        Some("lowest") => Ok(TodoPriority::Lowest),
         Some("low") => Ok(TodoPriority::Low),
-        Some("medium") => Ok(TodoPriority::Medium),
+        Some("default" | "medium") => Ok(TodoPriority::Default),
         Some("high") => Ok(TodoPriority::High),
+        Some("highest") => Ok(TodoPriority::Highest),
         Some(value) => Err(format!(
-            "invalid priority '{value}'; use low, medium, or high"
+            "invalid priority '{value}'; use lowest, low, default, high, or highest"
         )),
-        None => Err("priority requires low, medium, or high".to_owned()),
+        None => Err("priority requires lowest, low, default, high, or highest".to_owned()),
     }
 }
 

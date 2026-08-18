@@ -19,18 +19,23 @@ pub const APP_IDENTIFIER: &str = "com.xycdev.todo";
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TodoPriority {
-    #[default]
+    Lowest,
     Low,
-    Medium,
+    #[default]
+    #[serde(alias = "medium")]
+    Default,
     High,
+    Highest,
 }
 
 impl TodoPriority {
     pub const fn rank(self) -> u8 {
         match self {
-            Self::Low => 0,
-            Self::Medium => 1,
-            Self::High => 2,
+            Self::Lowest => 0,
+            Self::Low => 1,
+            Self::Default => 2,
+            Self::High => 3,
+            Self::Highest => 4,
         }
     }
 }
@@ -128,7 +133,7 @@ impl Todo {
         std::iter::once(self.task.priority)
             .chain(self.subtasks.iter().map(|task| task.priority))
             .max_by_key(|priority| priority.rank())
-            .unwrap_or(TodoPriority::Low)
+            .unwrap_or(TodoPriority::Default)
     }
 
     pub fn child_index(&self, id: u64) -> Option<usize> {
@@ -299,7 +304,7 @@ impl TodoStore {
                 title,
                 content: String::new(),
                 completion_result: String::new(),
-                priority: TodoPriority::Low,
+                priority: TodoPriority::Default,
                 completed: false,
                 created_at_ms: now_ms(),
             },
@@ -329,7 +334,7 @@ impl TodoStore {
                 title,
                 content: String::new(),
                 completion_result: String::new(),
-                priority: TodoPriority::Low,
+                priority: TodoPriority::Default,
                 completed: false,
                 created_at_ms,
             },
@@ -339,7 +344,7 @@ impl TodoStore {
                 title: initial_subtask_title,
                 content: String::new(),
                 completion_result: String::new(),
-                priority: TodoPriority::Low,
+                priority: TodoPriority::Default,
                 completed: false,
                 created_at_ms,
             }],
@@ -426,7 +431,7 @@ impl TodoStore {
             title,
             content: String::new(),
             completion_result: String::new(),
-            priority: TodoPriority::Low,
+            priority: TodoPriority::Default,
             completed: false,
             created_at_ms: now_ms(),
         };
@@ -1017,7 +1022,7 @@ mod tests {
         assert_eq!(todo.title, "First task");
         assert!(todo.content.is_empty());
         assert!(todo.completion_result.is_empty());
-        assert_eq!(todo.priority, TodoPriority::Low);
+        assert_eq!(todo.priority, TodoPriority::Default);
         assert!(todo.subtasks.is_empty());
         assert_eq!(todo.effective_title(), "First task");
         fs::remove_file(path).expect("test data should be removable");
@@ -1284,7 +1289,7 @@ mod tests {
         let path = test_path("redundant-parent-title");
         fs::write(
             &path,
-            r#"[{"id":1,"title":"Same task","content":"","completed":false,"createdAtMs":10,"archived":false,"subtasks":[{"id":2,"title":"Same task","content":"Body","completed":false,"createdAtMs":11}]}]"#,
+            r#"[{"id":1,"title":"Same task","content":"","priority":"low","completed":false,"createdAtMs":10,"archived":false,"subtasks":[{"id":2,"title":"Same task","content":"Body","priority":"low","completed":false,"createdAtMs":11}]}]"#,
         )
         .expect("legacy hierarchy should be written");
         let store = TodoStore::load(path.clone()).expect("legacy hierarchy should migrate");
@@ -1294,6 +1299,19 @@ mod tests {
         assert!(todo.subtasks.is_empty());
         assert_eq!(todo.effective_title(), "Same task");
         fs::remove_file(path).expect("test data should be removable");
+    }
+
+    #[test]
+    fn legacy_medium_priority_maps_to_default() {
+        let task: Task = serde_json::from_str(
+            r#"{"id":1,"title":"Legacy","content":"","completionResult":"","priority":"medium","completed":false,"createdAtMs":10}"#,
+        )
+        .expect("legacy medium priority should deserialize");
+        assert_eq!(task.priority, TodoPriority::Default);
+        assert_eq!(
+            serde_json::to_value(task.priority).expect("priority should serialize"),
+            serde_json::Value::String("default".to_owned())
+        );
     }
 
     #[test]
@@ -1312,7 +1330,7 @@ mod tests {
                 Some(String::new()),
                 Some("# Child document".to_owned()),
                 Some("Verified result".to_owned()),
-                Some(TodoPriority::Medium),
+                Some(TodoPriority::Default),
                 None,
             )
             .expect("child fields should update");
@@ -1321,7 +1339,7 @@ mod tests {
         assert!(child.title.is_empty());
         assert_eq!(child.content, "# Child document");
         assert_eq!(child.completion_result, "Verified result");
-        assert_eq!(child.priority, TodoPriority::Medium);
+        assert_eq!(child.priority, TodoPriority::Default);
         assert_eq!(child.created_at_ms, created_at_ms);
         fs::remove_file(path).expect("test data should be removable");
     }
